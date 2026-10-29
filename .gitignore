@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Runtime data (never commit media, databases or model weights)
+storage/
+models/*
+!models/manifest.json
+!models/README.md
+tools/
+samples/
+!samples/.gitkeep
+
+# Env / secrets
+.env
+*.log
+
+# OS
+Thumbs.db
+.DS_Store

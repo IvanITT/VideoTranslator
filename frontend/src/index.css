@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  @apply bg-ink-950 text-slate-200 font-sans antialiased;
+  background-image:
+    radial-gradient(circle at 15% -10%, rgba(251, 191, 36, 0.08), transparent 40%),
+    radial-gradient(circle at 90% 0%, rgba(45, 212, 191, 0.06), transparent 35%);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: rgba(251, 191, 36, 0.25);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a3a50 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #243247;
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+:focus-visible {
+  outline: 2px solid #fbbf24;
+  outline-offset: 2px;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-2xl border border-white/[0.06] bg-ink-900/80 backdrop-blur-sm;
+  }
+
+  .panel-raised {
+    @apply rounded-2xl border border-white/[0.08] bg-gradient-to-b from-ink-850 to-ink-900 shadow-xl shadow-black/30;
+  }
+
+  .label {
+    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-white/10 bg-ink-950/80 px-3.5 py-2.5 text-sm text-slate-100
+      placeholder:text-slate-600 transition focus:border-amber-400/60 focus:bg-ink-950
+      focus:outline-none focus:ring-2 focus:ring-amber-400/20 disabled:opacity-50;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04]
+      px-2.5 py-1 text-[11px] font-medium text-slate-300;
+  }
+
+  .stripe {
+    background-image: linear-gradient(
+      110deg,
+      rgba(255, 255, 255, 0) 30%,
+      rgba(255, 255, 255, 0.12) 45%,
+      rgba(255, 255, 255, 0) 60%
+    );
+    background-size: 200% 100%;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}

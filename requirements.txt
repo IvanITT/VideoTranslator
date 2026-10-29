@@ -1,0 +1,21 @@
+# Spanish Dubbing Studio - backend runtime dependencies
+# Python 3.11 (3.10/3.12 also work in most cases; 3.13 support depends on wheels)
+fastapi==0.115.14
+uvicorn[standard]==0.34.3
+python-multipart==0.0.32
+pydantic==2.14.1
+pydantic-settings==2.16.2
+psutil==7.2.2
+numpy==1.26.4
+soundfile==0.14.0
+huggingface-hub==0.36.2
+faster-whisper==1.2.1
+transformers==4.49.0
+sentencepiece==0.2.2
+sacremoses==0.2.0
+# PyTorch is installed separately by setup scripts (CPU or CUDA wheel), see docs/INSTALL.md
+torch==2.5.1
+
+# Tests
+pytest==9.2.0
+httpx==0.28.1
