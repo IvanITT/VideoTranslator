@@ -170,6 +170,7 @@ export function useSegments(jobId?: string | null, enabled = true, version = "")
   const [segments, setSegments] = useState<Segment[]>([]);
   const [duration, setDuration] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
 
   const reload = useCallback(async () => {
     if (!jobId) return;
@@ -178,6 +179,9 @@ export function useSegments(jobId?: string | null, enabled = true, version = "")
       const result = await api.segments(jobId);
       setSegments(result.segments);
       setDuration(result.duration || 0);
+      setError(null);
+    } catch (err) {
+      setError(err as Error);
     } finally {
       setLoading(false);
     }
@@ -188,7 +192,7 @@ export function useSegments(jobId?: string | null, enabled = true, version = "")
     reload();
   }, [jobId, enabled, reload, version]);
 
-  return { segments, setSegments, duration, loading, reload };
+  return { segments, setSegments, duration, loading, error, reload };
 }
 
 export function useToastQueue() {

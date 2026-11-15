@@ -526,6 +526,19 @@ export function Studio() {
                 </div>
                 {segmentsQ.loading ? (
                   <Card><Spinner label="Cargando segmentos…" /></Card>
+                ) : segmentsQ.error ? (
+                  <Card>
+                    <ErrorBanner
+                      title="No se pudo cargar el guion"
+                      message={segmentsQ.error.message}
+                      hint="Comprueba que el backend siga activo y vuelve a intentarlo."
+                      action={
+                        <Button variant="secondary" size="sm" onClick={segmentsQ.reload}>
+                          <RefreshCw size={13} /> Reintentar
+                        </Button>
+                      }
+                    />
+                  </Card>
                 ) : segmentsQ.segments.length === 0 ? (
                   <Card><EmptyState title="Sin segmentos" description="El trabajo no generó diálogo editable." /></Card>
                 ) : (

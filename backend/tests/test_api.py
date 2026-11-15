@@ -220,6 +220,16 @@ def test_update_settings_rejects_unknown_voice(client):
     assert response.json()["error"]["code"] == "validation_error"
 
 
+def test_update_settings_rejects_unknown_asr_model(client):
+    response = client.put("/api/settings", json={"asr_model": "not-a-model"})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+    wrong_stage = client.put("/api/settings", json={"asr_model": "marian-en-es"})
+    assert wrong_stage.status_code == 422
+    assert wrong_stage.json()["error"]["code"] == "validation_error"
+
+
 def test_maintenance_cleanup_reports_categories(client):
     response = client.post("/api/maintenance/cleanup?days=9999")
     assert response.status_code == 200

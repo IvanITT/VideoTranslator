@@ -6,6 +6,7 @@ import platform
 import shutil
 import subprocess
 from functools import lru_cache
+from pathlib import Path
 
 import psutil
 
@@ -59,6 +60,7 @@ def _gpu_info() -> dict:
     return info
 
 
+@lru_cache(maxsize=1)
 def _ffmpeg_version() -> str | None:
     if not config.ffmpeg:
         return None
@@ -74,29 +76,32 @@ def _ffmpeg_version() -> str | None:
 
 
 @lru_cache(maxsize=1)
-def get_hardware() -> dict:
-    mem = psutil.virtual_memory()
-    total_gb = round(mem.total / (1024 ** 3), 1)
-    available_gb = round(mem.available / (1024 ** 3), 1)
+def _static_hardware() -> dict:
+    """Values that do not change while the process is running."""
     cores = _physical_cores()
-    logical = os.cpu_count() or cores
-    gpu = _gpu_info()
-    free_disk = ffmpeg.available_disk_gb(config.data_dir)
     return {
         "os": f"{platform.system()} {platform.release()}",
         "cpu": platform.processor() or "Desconocido",
         "physical_cores": cores,
-        "logical_cores": logical,
-        "ram_total_gb": total_gb,
-        "ram_available_gb": available_gb,
-        "gpu": gpu,
+        "logical_cores": os.cpu_count() or cores,
+        "gpu": _gpu_info(),
         "recommended_threads": max(1, min(4, cores)),
-        "disk_free_gb": free_disk,
-        "ffmpeg": bool(config.ffmpeg and shutil.which(config.ffmpeg) or config.ffmpeg),
+        "python": platform.python_version(),
+    }
+
+
+def get_hardware() -> dict:
+    """Live hardware snapshot (RAM/disk refresh on every call)."""
+    mem = psutil.virtual_memory()
+    return {
+        **_static_hardware(),
+        "ram_total_gb": round(mem.total / (1024 ** 3), 1),
+        "ram_available_gb": round(mem.available / (1024 ** 3), 1),
+        "disk_free_gb": ffmpeg.available_disk_gb(config.data_dir),
+        "ffmpeg": bool(config.ffmpeg and Path(config.ffmpeg).exists()),
         "ffmpeg_version": _ffmpeg_version(),
         "ffmpeg_path": config.ffmpeg,
-        "piper": bool(config.piper),
-        "python": platform.python_version(),
+        "piper": bool(config.piper and Path(config.piper).exists()),
     }
 
 

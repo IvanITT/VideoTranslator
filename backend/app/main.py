@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -23,12 +24,31 @@ logging.basicConfig(
 )
 log = logging.getLogger("vts")
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    interrupted = JobsRepo.mark_interrupted()
+    if interrupted:
+        log.warning("%s trabajo(s) quedaron interrumpidos; pueden reanudarse.", interrupted)
+    queue_manager.start()
+    log.info("Spanish Dubbing Studio %s · http://%s:%s", config.version,
+             config.host, config.port)
+    if not config.ffmpeg:
+        log.error("FFmpeg no encontrado: ejecuta scripts/setup.ps1")
+    try:
+        yield
+    finally:
+        queue_manager.stop()
+
+
 app = FastAPI(
     title="Spanish Dubbing Studio",
     version=config.version,
     docs_url=None,
     redoc_url=None,
     openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
@@ -74,24 +94,6 @@ async def unexpected_error_handler(request: Request, exc: Exception):
 for router in (routes_system.router, routes_projects.router, routes_jobs.router,
                routes_models.router, routes_settings.router):
     app.include_router(router, prefix="/api")
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    init_db()
-    interrupted = JobsRepo.mark_interrupted()
-    if interrupted:
-        log.warning("%s trabajo(s) quedaron interrumpidos; pueden reanudarse.", interrupted)
-    queue_manager.start()
-    log.info("Spanish Dubbing Studio %s · http://%s:%s", config.version,
-             config.host, config.port)
-    if not config.ffmpeg:
-        log.error("FFmpeg no encontrado: ejecuta scripts/setup.ps1")
-
-
-@app.on_event("shutdown")
-def _shutdown() -> None:
-    queue_manager.stop()
 
 
 _dist = config.frontend_dist

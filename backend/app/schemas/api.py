@@ -33,6 +33,13 @@ PRESETS = {
     "high": "Alta calidad",
 }
 
+COMPUTE_TYPES = {
+    "auto", "int8", "int8_float16", "int8_bfloat16",
+    "float16", "bfloat16", "float32",
+}
+
+TRANSLATION_ENGINES = {"auto", "marian", "nllb"}
+
 
 class JobSettings(BaseModel):
     source_language: str = "auto"
@@ -93,6 +100,13 @@ class JobSettings(BaseModel):
     def _device(cls, value: str) -> str:
         if value not in ("auto", "cpu", "cuda"):
             raise ValueError("Dispositivo no válido.")
+        return value
+
+    @field_validator("compute_type")
+    @classmethod
+    def _compute_type(cls, value: str) -> str:
+        if value not in COMPUTE_TYPES:
+            raise ValueError("Tipo de cómputo no válido.")
         return value
 
     @field_validator("speech_rate")
@@ -157,6 +171,55 @@ class SettingsUpdate(BaseModel):
     compute_type: str | None = None
     cleanup_days: int | None = Field(default=None, ge=1, le=365)
     quantize_translation: bool | None = None
+
+    @field_validator("preset")
+    @classmethod
+    def _settings_preset(cls, value: str) -> str:
+        if value not in PRESETS:
+            raise ValueError("Perfil no válido.")
+        return value
+
+    @field_validator("target_variant")
+    @classmethod
+    def _settings_variant(cls, value: str) -> str:
+        if value not in TARGET_VARIANTS:
+            raise ValueError("Variante de español no soportada.")
+        return value
+
+    @field_validator("source_language")
+    @classmethod
+    def _settings_language(cls, value: str) -> str:
+        if value not in LANGUAGES:
+            raise ValueError("Idioma de origen no soportado.")
+        return value
+
+    @field_validator("mode")
+    @classmethod
+    def _settings_mode(cls, value: str) -> str:
+        if value not in MODES:
+            raise ValueError("Modo de audio no válido.")
+        return value
+
+    @field_validator("device")
+    @classmethod
+    def _settings_device(cls, value: str) -> str:
+        if value not in ("auto", "cpu", "cuda"):
+            raise ValueError("Dispositivo no válido.")
+        return value
+
+    @field_validator("compute_type")
+    @classmethod
+    def _settings_compute_type(cls, value: str) -> str:
+        if value not in COMPUTE_TYPES:
+            raise ValueError("Tipo de cómputo no válido.")
+        return value
+
+    @field_validator("translation_engine")
+    @classmethod
+    def _settings_engine(cls, value: str) -> str:
+        if value not in TRANSLATION_ENGINES:
+            raise ValueError("Motor de traducción no válido.")
+        return value
 
 
 class SegmentUpdate(BaseModel):

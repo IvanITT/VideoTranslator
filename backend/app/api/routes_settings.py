@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter
 
 from app.core.config import config
-from app.core.errors import ValidationError
+from app.core.errors import NotFoundError, ValidationError
 from app.database.repository import SettingsRepo
 from app.schemas.api import SettingsUpdate
 from app.services import hardware, models_manager, storage, tts
@@ -52,6 +52,19 @@ def update_settings(body: SettingsUpdate) -> dict:
             raise ValidationError(
                 f"La voz «{model['name']}» no está descargada.",
                 "Descárgala desde «Modelos» antes de seleccionarla.",
+            )
+    if values.get("asr_model") not in (None, "", "auto"):
+        try:
+            model = models_manager.get_model(values["asr_model"])
+        except NotFoundError as exc:
+            raise ValidationError(
+                "Modelo de reconocimiento desconocido.",
+                "Elige un modelo de la lista de Modelos.",
+            ) from exc
+        if model.get("stage") != "asr":
+            raise ValidationError(
+                "El modelo elegido no es de reconocimiento de voz.",
+                "Selecciona un modelo Whisper.",
             )
     updated = SettingsRepo.update(values)
     return {"settings": updated, "defaults": SettingsRepo.DEFAULTS}

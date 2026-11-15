@@ -124,12 +124,15 @@ def _run_demucs(audio_path: str, out_dir: str, *, cancel_check: CancelCheck,
         ]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, creationflags=SUBPROCESS_FLAGS)
+        err = ""
         while proc.poll() is None:
             if cancel_check and cancel_check():
                 proc.kill()
+                proc.wait()
                 raise CancelledError("Trabajo cancelado durante la separación.")
             try:
                 _, err = proc.communicate(timeout=1)
+                break
             except subprocess.TimeoutExpired:
                 continue
         if proc.returncode != 0:

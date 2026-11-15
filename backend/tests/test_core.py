@@ -37,6 +37,26 @@ def test_ffmpeg_and_piper_are_discovered():
     assert config.piper and Path(config.piper).exists()
 
 
+def test_hardware_returns_live_memory_and_boolean_ffmpeg(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services import hardware
+
+    snapshots = [
+        SimpleNamespace(total=8 * 1024 ** 3, available=1 * 1024 ** 3),
+        SimpleNamespace(total=8 * 1024 ** 3, available=2 * 1024 ** 3),
+    ]
+    monkeypatch.setattr(hardware.psutil, "virtual_memory", lambda: snapshots.pop(0))
+
+    first = hardware.get_hardware()
+    second = hardware.get_hardware()
+
+    assert first["ram_available_gb"] == 1.0
+    assert second["ram_available_gb"] == 2.0
+    assert isinstance(first["ffmpeg"], bool)
+    assert isinstance(first["piper"], bool)
+
+
 # -------------------------------------------------------------------- security
 def test_path_containment_blocks_traversal(tmp_path):
     root = tmp_path / "root"
@@ -156,6 +176,20 @@ def test_job_settings_clamp_values(field, raw, expected):
 def test_job_settings_reject_invalid_enums(field, value):
     with pytest.raises(PydanticValidationError):
         JobSettings(**{field: value})
+
+
+@pytest.mark.parametrize("field,value", [
+    ("source_language", "klingon"),
+    ("target_variant", "es-AR"),
+    ("mode", "karaoke"),
+    ("preset", "ultra"),
+    ("device", "tpu"),
+    ("compute_type", "quantum"),
+    ("translation_engine", "google"),
+])
+def test_settings_update_rejects_invalid_enums(field, value):
+    with pytest.raises(PydanticValidationError):
+        SettingsUpdate(**{field: value})
 
 
 def test_job_settings_audio_bitrate_falls_back():

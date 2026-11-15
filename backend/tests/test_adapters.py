@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.errors import CancelledError, MediaError, ModelMissingError
-from app.services import asr, models_manager, translation, tts
+from app.services import asr, models_manager, separation, translation, tts
 from app.services.translation import (BaseTranslator, TranslationError,
                                       normalize_text, postprocess,
                                       shorten_for_fit)
@@ -190,6 +190,32 @@ def test_tts_rejects_empty_text(tmp_path):
         tts.synthesize("   ", str(tmp_path / "out.wav"),
                        model={"engine": "piper", "local_dir": "missing"})
     assert "texto" in str(excinfo.value).lower()
+
+
+# ------------------------------------------------------------------ separation
+def test_demucs_failure_without_stderr_raises_clean_error(monkeypatch, tmp_path):
+    class FakeProcess:
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+        def kill(self):
+            return None
+
+        def wait(self):
+            return 1
+
+    monkeypatch.setattr(separation.subprocess, "Popen",
+                        lambda *args, **kwargs: FakeProcess())
+
+    with pytest.raises(separation.SeparationError) as excinfo:
+        separation._run_demucs("input.wav", str(tmp_path),
+                               cancel_check=None, progress=None)
+    assert "demucs" in excinfo.value.message.lower()
 
 
 # --------------------------------------------------------------- model manager
