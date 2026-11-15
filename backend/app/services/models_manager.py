@@ -20,6 +20,8 @@ from app.database.repository import ModelDownloadsRepo
 
 _lock = threading.Lock()
 _download_threads: dict[str, threading.Thread] = {}
+_disk_cache: tuple[float, int] | None = None
+_disk_lock = threading.Lock()
 
 REQUIRED_FILES = {
     "faster-whisper": ["model.bin", "config.json", "tokenizer.json"],
@@ -199,6 +201,39 @@ def describe_models() -> list[dict]:
     return out
 
 
+def invalidate_disk_usage() -> None:
+    """Drop the cached model-folder size after downloads or deletions."""
+    global _disk_cache
+    with _disk_lock:
+        _disk_cache = None
+
+
+def models_disk_usage_bytes(max_age_s: float = 30.0) -> int:
+    """Total bytes of installed model folders, cached for dashboard polling."""
+    global _disk_cache
+    now = time.monotonic()
+    with _disk_lock:
+        cached = _disk_cache
+        if cached is not None and now - cached[0] <= max_age_s:
+            return cached[1]
+
+    total = 0
+    for model in all_models():
+        directory = model_dir(model)
+        try:
+            if directory.exists():
+                total += sum(
+                    child.stat().st_size
+                    for child in directory.rglob("*")
+                    if child.is_file()
+                )
+        except OSError:
+            continue
+    with _disk_lock:
+        _disk_cache = (now, total)
+    return total
+
+
 def _repo_file_list(model: dict) -> list[str]:
     from huggingface_hub import HfApi
 
@@ -243,8 +278,10 @@ def download_model(model_id: str, background: bool = True) -> dict:
         def worker() -> None:
             try:
                 _do_download(model)
+                invalidate_disk_usage()
                 ModelDownloadsRepo.upsert(model_id, "completed", 1.0, "Modelo instalado", 0, 0)
             except Exception as exc:  # noqa: BLE001 - reported to the UI
+                invalidate_disk_usage()
                 ModelDownloadsRepo.upsert(
                     model_id, "failed", 0.0,
                     f"Error de descarga: {exc}. Comprueba tu conexión y vuelve a intentarlo.",
@@ -309,4 +346,5 @@ def remove_model(model_id: str) -> None:
             raise ModelMissingError("Ruta de modelo no permitida.", "Revisa el manifiesto.")
         if directory.exists():
             shutil.rmtree(directory)
+        invalidate_disk_usage()
         ModelDownloadsRepo.upsert(model_id, "not_installed", 0.0, "Modelo eliminado")

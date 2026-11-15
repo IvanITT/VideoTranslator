@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import config
 from app.core.errors import AppError, ConflictError, MediaError, NotFoundError, ValidationError
@@ -47,7 +48,7 @@ async def create_project(request: Request, file: UploadFile = File(...),
                         f"El archivo supera el límite de {max_bytes // (1024 * 1024)} MB.",
                         "Aumenta el límite en Ajustes o comprime el video.",
                     )
-                out.write(chunk)
+                await run_in_threadpool(out.write, chunk)
         if size == 0:
             raise ValidationError("El archivo está vacío.",
                                   "Selecciona un video MP4 válido.")

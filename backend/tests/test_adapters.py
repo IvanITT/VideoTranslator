@@ -257,3 +257,20 @@ def test_describe_models_reports_install_state():
         assert "installed" in model
         assert model["expected_files"] >= 0
         assert model["installed_files"] <= model["expected_files"] or not model["expected_files"]
+
+
+def test_models_disk_usage_is_cached(monkeypatch, tmp_path):
+    models_manager.invalidate_disk_usage()
+    monkeypatch.setattr(models_manager, "all_models", lambda: [{"id": "fake"}])
+    monkeypatch.setattr(models_manager, "model_dir", lambda model: tmp_path)
+    try:
+        (tmp_path / "a.bin").write_bytes(b"1234")
+        assert models_manager.models_disk_usage_bytes() == 4
+
+        (tmp_path / "b.bin").write_bytes(b"123456")
+        assert models_manager.models_disk_usage_bytes() == 4, "cached value expected"
+
+        models_manager.invalidate_disk_usage()
+        assert models_manager.models_disk_usage_bytes() == 10
+    finally:
+        models_manager.invalidate_disk_usage()

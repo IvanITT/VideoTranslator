@@ -47,5 +47,10 @@ describe("visibility-aware polling", () => {
 
     act(() => setHidden(false));
     await waitFor(() => expect(loader.mock.calls.length).toBeGreaterThan(callsBeforeHide));
+
+    // Let the resumed request settle before the test environment is torn down.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
   });
 });

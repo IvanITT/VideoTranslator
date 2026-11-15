@@ -9,7 +9,7 @@ import pytest
 from app.core.config import config
 from app.database.repository import JobsRepo, ProjectsRepo, SegmentsRepo
 from app.schemas.api import JobSettings
-from app.services import models_manager
+from app.services import ffmpeg, models_manager
 
 
 def make_job(project_id: str, *, settings: dict | None = None,
@@ -74,6 +74,35 @@ def test_project_list_reports_active_job(client, upload_project):
 
     detail = client.get(f"/api/projects/{first['id']}").json()
     assert [job["id"] for job in detail["jobs"]] == [job_id]
+
+
+def test_upload_writes_chunks_off_the_event_loop(client, monkeypatch):
+    from app.api import routes_projects
+
+    monkeypatch.setattr(ffmpeg, "probe", lambda path: {
+        "duration": 3.0, "width": 320, "height": 180, "fps": 25.0,
+        "video_codec": "h264", "audio_codec": "aac", "has_audio": True,
+        "format": "mp4",
+    })
+    monkeypatch.setattr(ffmpeg, "make_thumbnail", lambda *args, **kwargs: True)
+
+    original = routes_projects.run_in_threadpool
+    writes: list[object] = []
+
+    async def counting(func, *args, **kwargs):
+        writes.append(args)
+        return await original(func, *args, **kwargs)
+
+    monkeypatch.setattr(routes_projects, "run_in_threadpool", counting)
+
+    payload = b"x" * (2 * 1024 * 1024 + 10)
+    response = client.post(
+        "/api/projects",
+        files={"file": ("grande.mp4", payload, "video/mp4")},
+        data={"name": "Grande"},
+    )
+    assert response.status_code == 201, response.text
+    assert len(writes) >= 3, "each 1 MB chunk must be written in a worker thread"
 
 
 def test_upload_rejects_wrong_extension(client):

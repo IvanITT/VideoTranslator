@@ -9,6 +9,7 @@ import hashlib
 import json
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import psutil
@@ -50,6 +51,29 @@ STAGE_WEIGHTS = {
 def _fmt_time(seconds: float) -> str:
     seconds = max(0, int(seconds))
     return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _fingerprint(payload: dict) -> str:
+    """Stable hash for artifact-reuse decisions."""
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                         default=str).encode("utf-8")
+    return hashlib.sha1(encoded).hexdigest()
+
+
+def _mtime_ns(path: Path | str | None) -> int:
+    if not path:
+        return 0
+    try:
+        return Path(path).stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _has_file(path: Path, min_bytes: int = 1000) -> bool:
+    try:
+        return path.exists() and path.stat().st_size >= min_bytes
+    except OSError:
+        return False
 
 
 class JobContext:
@@ -251,25 +275,42 @@ class Pipeline:
         ctx = self.ctx
         audio_full = ctx.job_dir / "audio" / "original.wav"
         audio_asr = ctx.job_dir / "audio" / "asr.wav"
-        if audio_full.exists() and audio_asr.exists() and (
+        need_full = not audio_full.exists()
+        need_asr = not audio_asr.exists()
+        if not need_full and not need_asr and (
             ctx.stage_status.get("extraction") == "completed" or ctx.resume
         ):
             ctx.stage_done("extraction", "Audio ya extraído", skipped=True)
             return
         ctx.stage_start("extraction", "Extrayendo audio sin recodificar el video")
         audio_full.parent.mkdir(parents=True, exist_ok=True)
-        ffmpeg.extract_audio(
-            ctx.project["source_path"], str(audio_full), sample_rate=48000, channels=2,
-            duration=self.duration,
-            progress_cb=lambda p, m: ctx.progress("extraction", p * 0.6, m),
-            cancel_check=ctx.check_cancel,
-        )
-        ffmpeg.extract_audio(
-            ctx.project["source_path"], str(audio_asr), sample_rate=16000, channels=1,
-            duration=self.duration,
-            progress_cb=lambda p, m: ctx.progress("extraction", 0.6 + p * 0.4, m),
-            cancel_check=ctx.check_cancel,
-        )
+        if need_full and need_asr:
+            ffmpeg.extract_audio(
+                ctx.project["source_path"], str(audio_full), sample_rate=48000,
+                channels=2, duration=self.duration,
+                progress_cb=lambda p, m: ctx.progress("extraction", p * 0.6, m),
+                cancel_check=ctx.check_cancel,
+            )
+            ffmpeg.extract_audio(
+                ctx.project["source_path"], str(audio_asr), sample_rate=16000,
+                channels=1, duration=self.duration,
+                progress_cb=lambda p, m: ctx.progress("extraction", 0.6 + p * 0.4, m),
+                cancel_check=ctx.check_cancel,
+            )
+        elif need_full:
+            ffmpeg.extract_audio(
+                ctx.project["source_path"], str(audio_full), sample_rate=48000,
+                channels=2, duration=self.duration,
+                progress_cb=lambda p, m: ctx.progress("extraction", p, m),
+                cancel_check=ctx.check_cancel,
+            )
+        else:
+            ffmpeg.extract_audio(
+                ctx.project["source_path"], str(audio_asr), sample_rate=16000,
+                channels=1, duration=self.duration,
+                progress_cb=lambda p, m: ctx.progress("extraction", p, m),
+                cancel_check=ctx.check_cancel,
+            )
         ctx.stage_done("extraction", f"Audio 48 kHz y 16 kHz listo ({_fmt_time(self.duration)})")
 
     def _stage_asr(self) -> None:
@@ -474,6 +515,7 @@ class Pipeline:
         total = len(self.segments)
         done = 0
         failures = 0
+        pending: list[tuple[int, dict, str, str]] = []
         for index, seg in enumerate(self.segments):
             ctx.check_cancel()
             text = (seg.get("text_es") or "").strip()
@@ -490,40 +532,63 @@ class Pipeline:
                 seg["tts_duration"] = seg.get("tts_duration") or ffmpeg.wav_duration(str(target))
                 done += 1
                 continue
-            try:
-                result = tts.synthesize(
-                    text, str(target), model=model, rate=rate, volume=volume,
-                    cancel_check=ctx.check_cancel,
-                )
-            except CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                failures += 1
-                ctx.warn(
-                    f"No se pudo generar el segmento {index + 1}: "
-                    f"{getattr(exc, 'message', str(exc))}"
-                )
-                SegmentsRepo.update(ctx.job_id, index, status="tts_error")
-                done += 1
-                continue
-            seg["tts_path"] = result["path"]
-            seg["tts_duration"] = result["duration"]
-            seg["status"] = "voiced"
-            if result["engine"] != "piper" and "sapi_fallback" not in ctx.stats:
-                ctx.stats["sapi_fallback"] = True
-                ctx.warn(
-                    "Piper no está disponible: se usó la voz integrada de Windows (SAPI). "
-                    "La pronunciación es inteligible pero menos natural. Ejecuta "
-                    "scripts/setup.ps1 para habilitar Piper."
-                )
-            SegmentsRepo.update(
-                ctx.job_id, index, tts_path=result["path"],
-                tts_duration=result["duration"], status="voiced",
+            pending.append((index, seg, str(target), text))
+
+        if pending:
+            # Piper and FFmpeg are external processes, so a small pool overlaps
+            # process startup and I/O without oversubscribing low-end CPUs.
+            workers = max(1, min(4, ctx.threads // 2))
+            ctx.log(
+                f"Generando {len(pending)} segmentos de voz con "
+                f"{workers} trabajador(es)."
             )
-            ctx.stats["tts_engine"] = result["engine"]
-            done += 1
-            ctx.progress("tts", done / total,
-                         f"Generando voz {done}/{total} (segmento {index + 1})")
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="vts-tts") as pool:
+                futures = {
+                    pool.submit(
+                        tts.synthesize, text, target, model=model, rate=rate,
+                        volume=volume, cancel_check=ctx.check_cancel,
+                    ): (index, seg)
+                    for index, seg, target, text in pending
+                }
+                for future in as_completed(futures):
+                    ctx.check_cancel()
+                    index, seg = futures[future]
+                    try:
+                        result = future.result()
+                    except CancelledError:
+                        for item in futures:
+                            item.cancel()
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        failures += 1
+                        ctx.warn(
+                            f"No se pudo generar el segmento {index + 1}: "
+                            f"{getattr(exc, 'message', str(exc))}"
+                        )
+                        SegmentsRepo.update(ctx.job_id, index, status="tts_error")
+                    else:
+                        seg["tts_path"] = result["path"]
+                        seg["tts_duration"] = result["duration"]
+                        seg["status"] = "voiced"
+                        if result["engine"] != "piper" and "sapi_fallback" not in ctx.stats:
+                            ctx.stats["sapi_fallback"] = True
+                            ctx.warn(
+                                "Piper no está disponible: se usó la voz integrada de "
+                                "Windows (SAPI). La pronunciación es inteligible pero "
+                                "menos natural. Ejecuta scripts/setup.ps1 para habilitar "
+                                "Piper."
+                            )
+                        SegmentsRepo.update(
+                            ctx.job_id, index, tts_path=result["path"],
+                            tts_duration=result["duration"], status="voiced",
+                        )
+                        ctx.stats["tts_engine"] = result["engine"]
+                    done += 1
+                    ctx.progress(
+                        "tts", done / total,
+                        f"Generando voz {done}/{total} (segmento {index + 1})",
+                    )
+
         if failures == total:
             raise MediaError(
                 "No se pudo generar ninguna voz en español.",
@@ -542,9 +607,35 @@ class Pipeline:
         if not voiced:
             raise MediaError("No hay audio generado para sincronizar.",
                              "Vuelve a generar la voz.")
-        ctx.stage_start("sync", "Ajustando velocidad y silencios")
         gap = alignment.clamp_gap(ctx.settings.get("gap_ms", 80))
         max_speedup = float(ctx.settings.get("max_speedup") or 1.18)
+        fingerprint = _fingerprint({
+            "segments": [
+                {
+                    "index": s.get("idx", s.get("index")),
+                    "start": s.get("start"), "end": s.get("end"),
+                    "tts_path": s.get("tts_path"),
+                    "tts_duration": s.get("tts_duration"),
+                    "text": s.get("text_es") or "",
+                }
+                for s in voiced
+            ],
+            "gap_ms": gap, "max_speedup": max_speedup, "duration": self.duration,
+        })
+        existing = ctx.read_json("sync.json")
+        if (isinstance(existing, dict) and existing.get("fingerprint") == fingerprint
+                and _has_file(ctx.job_dir / "dub.wav")):
+            ctx.stats.update(existing.get("stats") or {})
+            for place in existing.get("placements") or []:
+                SegmentsRepo.update(
+                    ctx.job_id, place["index"],
+                    status="overlong" if place.get("warning") else "ready",
+                    warning=place.get("warning"),
+                )
+            ctx.stage_done("sync", "Sincronización reutilizada", skipped=True)
+            return
+
+        ctx.stage_start("sync", "Ajustando velocidad y silencios")
         result = alignment.build_dub(
             voiced, str(ctx.job_dir / "dub.wav"),
             total_duration=self.duration, gap_ms=gap, max_speedup=max_speedup,
@@ -559,16 +650,18 @@ class Pipeline:
                 status="overlong" if place["warning"] else "ready",
                 warning=place["warning"],
             )
-        ctx.write_json("sync.json", {
-            "placements": result.placements, "warnings": result.warnings,
-            "max_speed": result.max_speed, "gap_ms": gap, "max_speedup": max_speedup,
-        })
-        ctx.stats.update({
+        stats = {
             "sync_max_speed": result.max_speed,
             "sync_overlong": result.overlong,
             "sync_trimmed": result.trimmed,
             "dub_duration": result.duration,
+        }
+        ctx.write_json("sync.json", {
+            "placements": result.placements, "warnings": result.warnings,
+            "max_speed": result.max_speed, "gap_ms": gap, "max_speedup": max_speedup,
+            "fingerprint": fingerprint, "stats": stats,
         })
+        ctx.stats.update(stats)
         detail = f"{len(result.placements)} segmentos sincronizados"
         if result.overlong:
             detail += f" · {result.overlong} con advertencia de duración"
@@ -593,32 +686,51 @@ class Pipeline:
                         "original atenuado. La música y los efectos se conservan, pero también "
                         "puede oírse el diálogo original de fondo."
                     )
+        loudness = float(ctx.settings.get("loudness_lufs") or -16.0)
+        ducking = bool(ctx.settings.get("ducking", True))
+        mix_path = ctx.job_dir / "mix.wav"
+        fingerprint = _fingerprint({
+            "mode": mode, "loudness_lufs": loudness, "ducking": ducking,
+            "duration": self.duration, "dub_mtime": _mtime_ns(dub),
+            "background": background,
+            "background_mtime": _mtime_ns(background),
+        })
+        existing = ctx.read_json("mix.json")
+        if (isinstance(existing, dict) and existing.get("fingerprint") == fingerprint
+                and _has_file(mix_path)):
+            ctx.stats.update(existing.get("stats") or {})
+            ctx.stage_done("mix", "Mezcla reutilizada", skipped=True)
+            return
+
         ctx.stage_start("mix", f"Mezclando doblaje ({mixing.MODES.get(mode, mode)})")
         result = mixing.mix_audio(
-            str(dub), str(ctx.job_dir / "mix.wav"),
+            str(dub), str(mix_path),
             background_path=background, mode=mode,
-            loudness_lufs=float(ctx.settings.get("loudness_lufs") or -16.0),
-            ducking=bool(ctx.settings.get("ducking", True)),
+            loudness_lufs=loudness, ducking=ducking,
             duration=self.duration, cancel_check=ctx.check_cancel,
         )
-        ctx.stats.update({"mix_mode": mode, "mix_background": result["background"]})
+        stats = {"mix_mode": mode, "mix_background": result["background"]}
+        ctx.write_json("mix.json", {
+            "fingerprint": fingerprint, "stats": stats,
+            "background": result["background"], "mode": mode,
+        })
+        ctx.stats.update(stats)
         ctx.progress("mix", 1.0, "Mezcla lista")
         ctx.stage_done("mix", "Doblaje + fondo" if result["background"] else "Solo doblaje")
 
-    def _stage_render(self) -> dict:
+    def _write_subtitles(self) -> None:
         ctx = self.ctx
-        ctx.stage_start("render", "Combinando video original y audio doblado")
-        output = ctx.job_dir / "output.mp4"
-        mode = ctx.settings.get("mode", "dub_plus_background")
-        result = mixing.render_video(
-            ctx.project["source_path"], str(ctx.job_dir / "mix.wav"), str(output),
-            mode=mode, duration=self.duration,
-            audio_bitrate=ctx.settings.get("audio_bitrate", "192k"),
-            include_original=mode == "dual", cancel_check=ctx.check_cancel,
-            progress=lambda p, m: ctx.progress("render", p, m),
+        subtitles_dir = ctx.job_dir / "subtitles"
+        subtitles_dir.mkdir(exist_ok=True)
+        segments = SegmentsRepo.list(ctx.job_id)
+        (subtitles_dir / "es.srt").write_text(subtitles.to_srt(segments), encoding="utf-8")
+        (subtitles_dir / "es.vtt").write_text(subtitles.to_vtt(segments), encoding="utf-8")
+        (ctx.job_dir / "transcript.txt").write_text(
+            subtitles.to_transcript(segments), encoding="utf-8"
         )
-        for warning in result.get("warnings", []):
-            ctx.warn(warning)
+
+    def _export_output(self, output: Path) -> None:
+        ctx = self.ctx
         try:
             exports = config.exports_dir
             exports.mkdir(parents=True, exist_ok=True)
@@ -629,16 +741,53 @@ class Pipeline:
         except OSError as exc:
             ctx.warn(f"No se pudo copiar el archivo a la carpeta de exportaciones: {exc}")
 
-        subtitles_dir = ctx.job_dir / "subtitles"
-        subtitles_dir.mkdir(exist_ok=True)
+    def _stage_render(self) -> dict:
+        ctx = self.ctx
+        output = ctx.job_dir / "output.mp4"
+        mix_path = ctx.job_dir / "mix.wav"
+        mode = ctx.settings.get("mode", "dub_plus_background")
+        bitrate = ctx.settings.get("audio_bitrate", "192k")
         segments = SegmentsRepo.list(ctx.job_id)
-        (subtitles_dir / "es.srt").write_text(subtitles.to_srt(segments), encoding="utf-8")
-        (subtitles_dir / "es.vtt").write_text(subtitles.to_vtt(segments), encoding="utf-8")
-        (ctx.job_dir / "transcript.txt").write_text(
-            subtitles.to_transcript(segments), encoding="utf-8"
-        )
+        source = ctx.project["source_path"]
+        fingerprint = _fingerprint({
+            "mix_mtime": _mtime_ns(mix_path),
+            "source": str(source), "source_mtime": _mtime_ns(source),
+            "source_size": Path(source).stat().st_size if Path(source).exists() else 0,
+            "mode": mode, "bitrate": bitrate, "duration": self.duration,
+            "segments": [
+                {"idx": s.get("idx"), "start": s.get("start"), "end": s.get("end"),
+                 "text_es": s.get("text_es") or ""}
+                for s in segments
+            ],
+        })
+        existing = ctx.read_json("render.json")
+        existing_result = existing.get("result") if isinstance(existing, dict) else None
+        if (isinstance(existing, dict) and existing.get("fingerprint") == fingerprint
+                and _has_file(output) and (existing_result or {}).get("path")):
+            ctx.stats.update(existing.get("stats") or {})
+            self._write_subtitles()
+            self._export_output(output)
+            ctx.stage_done("render", "Video reutilizado", skipped=True)
+            ctx.stats["elapsed_s"] = round(time.monotonic() - ctx.started, 1)
+            JobsRepo.update(
+                ctx.job_id, output_path=str(output), stats=ctx.stats,
+                warnings=ctx.warnings, progress=100,
+            )
+            return existing_result
 
-        ctx.stats.update({
+        ctx.stage_start("render", "Combinando video original y audio doblado")
+        result = mixing.render_video(
+            source, str(mix_path), str(output),
+            mode=mode, duration=self.duration, audio_bitrate=bitrate,
+            include_original=mode == "dual", cancel_check=ctx.check_cancel,
+            progress=lambda p, m: ctx.progress("render", p, m),
+        )
+        for warning in result.get("warnings", []):
+            ctx.warn(warning)
+        self._write_subtitles()
+        self._export_output(output)
+
+        stats = {
             "output_size_bytes": result["size_bytes"],
             "output_duration": result["duration"],
             "output_width": result["width"],
@@ -647,6 +796,10 @@ class Pipeline:
             "output_video_codec": result["video_codec"],
             "output_audio_codec": result["audio_codec"],
             "elapsed_s": round(time.monotonic() - ctx.started, 1),
+        }
+        ctx.stats.update(stats)
+        ctx.write_json("render.json", {
+            "fingerprint": fingerprint, "result": result, "stats": stats,
         })
         ctx.stage_done("render", f"MP4 listo · {result['size_bytes'] / 1024 / 1024:.1f} MB")
         JobsRepo.update(

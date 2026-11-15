@@ -102,10 +102,7 @@ def health() -> dict:
 def system_info() -> dict:
     hw = hardware.get_hardware()
     installed = models_manager.describe_models()
-    models_size = sum(
-        sum(f.stat().st_size for f in Path(m["local_path"]).rglob("*") if f.is_file())
-        for m in installed if m["installed"]
-    )
+    models_size = models_manager.models_disk_usage_bytes()
     try:
         usage = shutil.disk_usage(config.data_dir)
         storage = {"free_gb": round(usage.free / 1024 ** 3, 1),

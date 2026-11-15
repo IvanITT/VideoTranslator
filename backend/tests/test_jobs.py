@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import uuid
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +14,7 @@ from app.core.config import config
 from app.core.errors import CancelledError, MediaError
 from app.database.repository import JobsRepo, SegmentsRepo
 from app.schemas.api import JobSettings
+from app.services import alignment, mixing, models_manager, tts
 from app.workers import queue as queue_module
 from app.workers.pipeline import JobContext, Pipeline
 from app.workers.queue import queue_manager
@@ -198,6 +203,153 @@ def test_pipeline_run_logs_resume(monkeypatch):
 
     events = [event["message"] for event in JobsRepo.get_events(job_id)]
     assert any("Reanudando" in message for message in events)
+
+
+def test_extraction_only_rebuilds_missing_track(monkeypatch):
+    project_id = _project()
+    job_id = make_job(project_id)
+    ctx = JobContext(job_id)
+    audio = ctx.job_dir / "audio"
+    audio.mkdir(parents=True, exist_ok=True)
+    (audio / "original.wav").write_bytes(b"RIFForiginal")
+
+    calls: list[str] = []
+
+    def fake_extract(video, output, **kwargs):
+        calls.append(Path(output).name)
+        Path(output).write_bytes(b"RIFFnew")
+
+    monkeypatch.setattr("app.workers.pipeline.ffmpeg.extract_audio", fake_extract)
+
+    pipeline = Pipeline(ctx)
+    pipeline._stage_extraction()
+    assert calls == ["asr.wav"], "original.wav should be reused"
+
+    calls.clear()
+    pipeline._stage_extraction()
+    assert calls == [], "both tracks exist, so the stage should be skipped"
+
+
+def test_tts_uses_bounded_parallel_workers(monkeypatch):
+    project_id = _project()
+    job_id = make_job(project_id, settings={"threads": 4, "voice": "voice-x"})
+    SegmentsRepo.replace_all(job_id, [
+        {"start": i, "end": i + 0.8, "text_src": f"line {i}",
+         "text_es": f"línea {i}", "status": "translated"}
+        for i in range(6)
+    ])
+    ctx = JobContext(job_id)
+    fake_model = {
+        "voice": {"id": "voice-x", "label": "Voz X", "variant": "es-MX"},
+        "engine": "piper",
+    }
+    monkeypatch.setattr(models_manager, "resolve_tts_model", lambda *a, **k: fake_model)
+
+    lock = threading.Lock()
+    active = [0]
+    peak = [0]
+
+    def fake_synthesize(text, output, **kwargs):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.05)
+        with lock:
+            active[0] -= 1
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_bytes(b"RIFFtts")
+        return {"path": output, "duration": 0.5, "engine": "piper"}
+
+    monkeypatch.setattr(tts, "synthesize", fake_synthesize)
+
+    Pipeline(ctx)._stage_tts()
+
+    assert peak[0] >= 2, "TTS should overlap external processes"
+    assert all(segment["tts_path"] for segment in SegmentsRepo.list(job_id))
+
+
+def test_sync_reuses_artifact_when_fingerprint_matches(monkeypatch):
+    project_id = _project()
+    job_id = make_job(project_id)
+    ctx = JobContext(job_id)
+    tts_file = ctx.job_dir / "tts" / "0000.wav"
+    tts_file.parent.mkdir(parents=True, exist_ok=True)
+    tts_file.write_bytes(b"RIFFtts")
+    SegmentsRepo.replace_all(job_id, [
+        {"start": 0.0, "end": 1.0, "text_src": "Hi", "text_es": "Hola",
+         "tts_path": str(tts_file), "tts_duration": 0.5, "status": "voiced"},
+    ])
+
+    def fake_build(segments, output, **kwargs):
+        Path(output).write_bytes(b"RIFFdub" * 500)
+        return SimpleNamespace(
+            placements=[{"index": 0, "warning": None}],
+            warnings=[], max_speed=1.0, overlong=0, trimmed=0, duration=3.0,
+        )
+
+    monkeypatch.setattr(alignment, "build_dub", fake_build)
+    Pipeline(ctx)._stage_sync()
+    assert JobsRepo.get(job_id)["stages"][6]["status"] == "completed"
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("sync should reuse dub.wav and sync.json")
+
+    monkeypatch.setattr(alignment, "build_dub", must_not_run)
+    Pipeline(JobContext(job_id))._stage_sync()
+    assert JobsRepo.get(job_id)["stages"][6]["status"] == "skipped"
+
+
+def test_mix_reuses_artifact_when_fingerprint_matches(monkeypatch):
+    project_id = _project()
+    job_id = make_job(project_id, settings={"mode": "dub_only"})
+    ctx = JobContext(job_id)
+    (ctx.job_dir / "dub.wav").write_bytes(b"RIFFdub" * 500)
+
+    def fake_mix(dub_path, output, **kwargs):
+        Path(output).write_bytes(b"RIFFmix" * 500)
+        return {"background": False}
+
+    monkeypatch.setattr(mixing, "mix_audio", fake_mix)
+    Pipeline(ctx)._stage_mix()
+    assert ctx.stats["mix_mode"] == "dub_only"
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("mix should reuse mix.wav and mix.json")
+
+    monkeypatch.setattr(mixing, "mix_audio", must_not_run)
+    Pipeline(JobContext(job_id))._stage_mix()
+    assert JobsRepo.get(job_id)["stages"][7]["status"] == "skipped"
+
+
+def test_render_reuses_output_when_fingerprint_matches(monkeypatch):
+    project_id = _project()
+    job_id = make_job(project_id, settings={"mode": "dub_only"})
+    ctx = JobContext(job_id)
+    (ctx.job_dir / "mix.wav").write_bytes(b"RIFFmix" * 500)
+    SegmentsRepo.replace_all(job_id, [
+        {"start": 0.0, "end": 1.0, "text_src": "Hi", "text_es": "Hola",
+         "status": "ready"},
+    ])
+
+    def fake_render(video, audio, output, **kwargs):
+        Path(output).write_bytes(b"x" * 2000)
+        return {
+            "path": str(output), "duration": 3.0, "width": 320, "height": 180,
+            "fps": 25.0, "video_codec": "h264", "audio_codec": "aac",
+            "size_bytes": 2000, "warnings": [],
+        }
+
+    monkeypatch.setattr(mixing, "render_video", fake_render)
+    first = Pipeline(ctx)._stage_render()
+    assert Path(first["path"]).exists()
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("render should reuse output.mp4 and render.json")
+
+    monkeypatch.setattr(mixing, "render_video", must_not_run)
+    second = Pipeline(JobContext(job_id))._stage_render()
+    assert second["path"] == first["path"]
+    assert JobsRepo.get(job_id)["stages"][8]["status"] == "skipped"
 
 
 def test_pipeline_rejects_missing_source(upload_project):
