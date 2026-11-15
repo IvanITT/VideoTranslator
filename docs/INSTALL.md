@@ -23,6 +23,18 @@ finds 3.11 or 3.12 explicitly.
 
 ## 2. One-command setup
 
+### Check first (recommended)
+
+The project root includes a checker/installer that is convenient when moving
+the app to another computer:
+
+- Double-click `Instalar o Verificar.bat`.
+- Or run `powershell -ExecutionPolicy Bypass -File .\instalar-o-verificar.ps1`.
+
+It checks Python, `.venv`, Python packages, FFmpeg, Piper, `frontend\dist` and
+the models. If something is missing it offers to run `scripts\setup.ps1`.
+Useful flags: `-VerifyOnly`, `-Install`, `-SkipModels`, `-Force`.
+
 Open PowerShell in the project folder:
 
 ```powershell

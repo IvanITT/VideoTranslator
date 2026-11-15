@@ -196,9 +196,37 @@ cd VideoTranslator
 
 Si no usas Git, descarga el ZIP desde GitHub y descomprímelo.
 
-### 3. Instalación automática (recomendada)
+### 3. Instalar o verificar dependencias (recomendado)
 
-Desde la carpeta del proyecto:
+En la raíz del proyecto hay un script pensado para otra computadora:
+
+- **Doble clic:** `Instalar o Verificar.bat`
+- **PowerShell:**
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\instalar-o-verificar.ps1
+  ```
+
+Comprueba Python, `.venv`, dependencias Python, FFmpeg, Piper, la interfaz compilada y los modelos. Si falta algo, pregunta si quieres instalarlo usando `scripts\setup.ps1`.
+
+Opciones útiles:
+
+```powershell
+# Solo comprobar, sin instalar nada
+.\instalar-o-verificar.ps1 -VerifyOnly
+
+# Instalar sin preguntar
+.\instalar-o-verificar.ps1 -Install
+
+# Instalar sin modelos; se pueden bajar después desde la interfaz
+.\instalar-o-verificar.ps1 -Install -SkipModels
+
+# Recrear .venv desde cero
+.\instalar-o-verificar.ps1 -Install -Force
+```
+
+### 4. Instalación automática detallada
+
+También puedes ejecutar directamente el instalador completo:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
@@ -239,7 +267,7 @@ Ejemplos:
 
 Si PowerShell bloquea scripts, usa la forma `powershell -ExecutionPolicy Bypass -File ...` o el `.bat`. **No es necesario cambiar la política de ejecución de forma permanente.**
 
-### 4. Iniciar la aplicación
+### 5. Iniciar la aplicación
 
 La forma más sencilla es hacer doble clic en **`Spanish Dubbing Studio.exe`** en la raíz del proyecto, o en el acceso directo creado en el Escritorio y en el menú Inicio.
 
@@ -276,7 +304,7 @@ El `.exe` acepta además:
 
 > **SmartScreen:** la primera vez Windows puede advertir que el ejecutable no está firmado. Elige **Más información → Ejecutar de todas formas**. El archivo es el lanzador local incluido en el repositorio.
 
-### 5. Verificar la instalación
+### 6. Verificar la instalación
 
 ```powershell
 .\.venv\Scripts\python.exe backend\verify_install.py
@@ -292,7 +320,7 @@ La salida esperada comprueba FFmpeg, FFprobe, Piper, la interfaz compilada y los
 [OK  ] Speech recognition: whisper-tiny
 ```
 
-### 6. Instalación manual (avanzada)
+### 7. Instalación manual (avanzada)
 
 Si prefieres controlar cada paso, o ya tienes FFmpeg/Piper:
 
@@ -321,7 +349,7 @@ $env:VTS_PIPER   = "C:\ruta\a\piper.exe"
 
 O colócalos en `tools\ffmpeg\bin\` y `tools\piper\`. Si Piper no está disponible, la app usa la voz SAPI de Windows como respaldo.
 
-### 7. Desarrollo
+### 8. Desarrollo
 
 Terminal 1 — API con auto-reload:
 
@@ -725,6 +753,8 @@ VideoTranslator/
 ├── docs/                   INSTALL, ARCHITECTURE, MODELS, TROUBLESHOOTING
 ├── samples/                Clips de ejemplo locales (ignorados por Git)
 ├── Spanish Dubbing Studio.exe   Lanzador de un clic (~380 KB)
+├── Instalar o Verificar.bat      Comprobación/instalación para otra PC
+├── instalar-o-verificar.ps1      Lógica de comprobación e instalación
 ├── requirements.txt
 ├── THIRD_PARTY_NOTICES.md
 ├── LICENSE
@@ -764,6 +794,7 @@ Primero ejecuta la verificación:
 | Problema | Causa probable | Solución |
 |---|---|---|
 | **Python no encontrado / error con 3.13** | Python incorrecto o no está en PATH. | Instala Python 3.11 y vuelve a ejecutar `setup.ps1`. |
+| **`No module named uvicorn`** | El `.venv` existe pero le faltan dependencias. | Ejecuta `scripts\setup.ps1` o `.\.venv\Scripts\python.exe -m pip install -r requirements.txt`. |
 | **PowerShell bloquea el script** | Política de ejecución. | Usa `powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1` o `setup.bat`. |
 | **403 Forbidden** | Estás abriendo la UI desde otro origen o un script no envía la cabecera. | Usa `http://127.0.0.1:8765`; los scripts deben enviar `X-VTS-Client: web`. |
 | **“Faltan modelos”** | No hay modelos ASR/traducción/TTS instalados. | Abre **Modelos** y descarga los esenciales. |

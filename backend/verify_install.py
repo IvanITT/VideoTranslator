@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -45,6 +46,11 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     required_ok = True
+    runtime_ok = all(importlib.util.find_spec(name) is not None
+                     for name in ("uvicorn", "fastapi", "pydantic"))
+    required_ok &= _line(runtime_ok, "Python runtime",
+                         "uvicorn + fastapi available" if runtime_ok
+                         else "dependencies missing; run pip install -r requirements.txt")
     required_ok &= _line(bool(config.ffmpeg), "FFmpeg",
                          version_of(config.ffmpeg, "-version"))
     required_ok &= _line(bool(config.ffprobe), "FFprobe",

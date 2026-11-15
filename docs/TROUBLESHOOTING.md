@@ -10,6 +10,9 @@ find the matching symptom.
 cd C:\Users\<you>\Desktop\video-translator
 .\.venv\Scripts\python.exe backend\verify_install.py
 .\.venv\Scripts\python.exe backend\download_models.py --list
+
+# Full dependency check (also works before .venv exists)
+powershell -ExecutionPolicy Bypass -File .\instalar-o-verificar.ps1 -VerifyOnly
 ```
 
 Check the API while the app is running:
@@ -53,6 +56,9 @@ or double-click the `.bat` launchers.
   it is not visible next to the clock.
 - Check `storage\logs\server.log` (right-click the tray icon → **Ver registro**).
   A missing `.venv` means `scripts\setup.ps1` has not finished.
+- If the log says `No module named uvicorn`, the virtual environment is
+  incomplete. Reinstall the pinned dependencies:
+  `.\.venv\Scripts\python.exe -m pip install -r requirements.txt`.
 - To stop the app even without the tray icon:
   `"Spanish Dubbing Studio.exe" --stop`.
 

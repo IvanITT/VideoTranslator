@@ -69,6 +69,18 @@ namespace SpanishDubbingStudio
                 return 2;
             }
 
+            if (!HasPythonDependencies())
+            {
+                MessageBox.Show(
+                    "El entorno de Python existe, pero faltan dependencias " +
+                    "(uvicorn/fastapi).\n\n" +
+                    "Ejecuta scripts\\setup.ps1 o instala las dependencias:\n" +
+                    ".venv\\Scripts\\python.exe -m pip install -r requirements.txt\n\n" +
+                    "Directorio: " + Root,
+                    AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return 3;
+            }
+
             bool created;
             using (var mutex = new Mutex(true, MutexName, out created))
             {
@@ -112,6 +124,33 @@ namespace SpanishDubbingStudio
                 if (string.Equals(value, flag, StringComparison.OrdinalIgnoreCase)) return true;
             }
             return false;
+        }
+
+        internal static bool HasPythonDependencies()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo(Python, "-c \"import uvicorn, fastapi\"")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Backend,
+                };
+                using (var process = Process.Start(psi))
+                {
+                    if (process == null) return false;
+                    if (!process.WaitForExit(15000))
+                    {
+                        try { process.Kill(); } catch { }
+                        return false;
+                    }
+                    return process.ExitCode == 0;
+                }
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         internal static bool IsHealthy()
