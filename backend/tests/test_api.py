@@ -32,6 +32,18 @@ def add_segments(job_id: str, segments: list[dict] | None = None) -> None:
     ])
 
 
+def make_project_row() -> str:
+    project_id = uuid.uuid4().hex
+    ProjectsRepo.create(
+        project_id=project_id, name="Proyecto", original_filename="v.mp4",
+        source_path=str(config.projects_dir / project_id / "source.mp4"),
+        size_bytes=10,
+        probe={"duration": 3.0, "width": 320, "height": 180, "fps": 25.0,
+               "video_codec": "h264", "audio_codec": "aac", "has_audio": True},
+    )
+    return project_id
+
+
 # --------------------------------------------------------------------- uploads
 def test_upload_creates_project_and_media(client, upload_project, sample_video):
     project = upload_project()
@@ -208,6 +220,15 @@ def test_update_settings_rejects_unknown_voice(client):
     assert response.json()["error"]["code"] == "validation_error"
 
 
+def test_maintenance_cleanup_reports_categories(client):
+    response = client.post("/api/maintenance/cleanup?days=9999")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["days"] == 365
+    assert "categories" in body
+    assert "removed" in body and "freed_mb" in body
+
+
 # ---------------------------------------------------------------------- system
 def test_health_endpoint(client):
     response = client.get("/api/health")
@@ -261,14 +282,7 @@ def test_queue_full_does_not_leave_an_orphan_job(client, monkeypatch):
     from app.api import routes_jobs
     from app.core.errors import AppError
 
-    project_id = uuid.uuid4().hex
-    ProjectsRepo.create(
-        project_id=project_id, name="Cola llena", original_filename="v.mp4",
-        source_path=str(config.projects_dir / project_id / "source.mp4"),
-        size_bytes=10,
-        probe={"duration": 3.0, "width": 320, "height": 180, "fps": 25.0,
-               "video_codec": "h264", "audio_codec": "aac", "has_audio": True},
-    )
+    project_id = make_project_row()
     monkeypatch.setattr(routes_jobs, "_preflight_models", lambda settings: None)
 
     def full(job_id):
@@ -451,6 +465,39 @@ def test_delete_active_job_is_blocked(client, upload_project):
     JobsRepo.update(job_id, status="failed")
     assert client.delete(f"/api/jobs/{job_id}").status_code == 204
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_delete_job_removes_its_export_copy(client):
+    project_id = make_project_row()
+    job_id = make_job(project_id, status="completed")
+    job_dir = config.projects_dir / project_id / f"job_{job_id}"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "output.mp4").write_bytes(b"x" * 1024)
+    config.exports_dir.mkdir(parents=True, exist_ok=True)
+    export = config.exports_dir / f"clip_{job_id[:8]}.mp4"
+    export.write_bytes(b"x" * 1024)
+    JobsRepo.update(job_id, stats={"export_path": str(export)})
+
+    response = client.delete(f"/api/jobs/{job_id}")
+
+    assert response.status_code == 204
+    assert not export.exists()
+    assert not job_dir.exists()
+
+
+def test_delete_project_removes_export_copies(client):
+    project_id = make_project_row()
+    job_id = make_job(project_id, status="completed")
+    config.exports_dir.mkdir(parents=True, exist_ok=True)
+    export = config.exports_dir / f"clip_{job_id[:8]}.mp4"
+    export.write_bytes(b"x" * 1024)
+    JobsRepo.update(job_id, stats={"export_path": str(export)})
+
+    response = client.delete(f"/api/projects/{project_id}")
+
+    assert response.status_code == 204
+    assert not export.exists()
+    assert not (config.projects_dir / project_id).exists()
 
 
 def test_jobs_listing(client, upload_project):

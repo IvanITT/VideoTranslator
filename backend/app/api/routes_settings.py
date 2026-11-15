@@ -1,8 +1,6 @@
 """Settings, options and local maintenance."""
 from __future__ import annotations
 
-import shutil
-import time
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -11,7 +9,7 @@ from app.core.config import config
 from app.core.errors import ValidationError
 from app.database.repository import SettingsRepo
 from app.schemas.api import SettingsUpdate
-from app.services import hardware, models_manager, tts
+from app.services import hardware, models_manager, storage, tts
 
 router = APIRouter(tags=["settings"])
 
@@ -61,21 +59,5 @@ def update_settings(body: SettingsUpdate) -> dict:
 
 @router.post("/maintenance/cleanup")
 def cleanup(days: int = 7) -> dict:
-    """Remove temporary files and orphaned project files older than N days."""
-    days = max(1, min(365, days))
-    cutoff = time.time() - days * 86400
-    removed = 0
-    freed = 0
-    for folder in (config.temp_dir, config.uploads_dir):
-        for path in Path(folder).glob("*"):
-            try:
-                if path.stat().st_mtime < cutoff:
-                    freed += path.stat().st_size if path.is_file() else 0
-                    if path.is_dir():
-                        shutil.rmtree(path, ignore_errors=True)
-                    else:
-                        path.unlink()
-                    removed += 1
-            except OSError:
-                continue
-    return {"removed": removed, "freed_mb": round(freed / 1024 ** 2, 1), "days": days}
+    """Remove old scratch data, exports and orphaned project/job folders."""
+    return storage.cleanup(days)

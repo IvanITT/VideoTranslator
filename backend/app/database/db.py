@@ -12,6 +12,13 @@ from typing import Iterator
 
 from app.core.config import config
 
+SCHEMA_VERSION = 2
+MIGRATIONS: dict[int, list[str]] = {
+    2: [
+        "CREATE INDEX IF NOT EXISTS idx_jobs_finished ON jobs(finished_at)",
+    ],
+}
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -103,6 +110,7 @@ CREATE TABLE IF NOT EXISTS model_downloads (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs(project_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_finished ON jobs(finished_at);
 CREATE INDEX IF NOT EXISTS idx_segments_job ON segments(job_id, idx);
 CREATE INDEX IF NOT EXISTS idx_events_job ON events(job_id, id);
 """
@@ -130,7 +138,22 @@ def get_conn() -> Iterator[sqlite3.Connection]:
 def init_db() -> None:
     config.ensure_dirs()
     with get_conn() as conn:
+        legacy = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'"
+        ).fetchone() is not None
         conn.executescript(SCHEMA)
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if not legacy:
+            # Fresh database: SCHEMA already contains every table and index.
+            conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            return
+        if version == 0:
+            # Databases created by 1.0.0 have the baseline schema but no version.
+            version = 1
+        for target in range(version + 1, SCHEMA_VERSION + 1):
+            for statement in MIGRATIONS.get(target, []):
+                conn.execute(statement)
+            conn.execute(f"PRAGMA user_version={target}")
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict | None:

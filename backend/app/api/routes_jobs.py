@@ -13,7 +13,7 @@ from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.core.security import ensure_within, safe_slug
 from app.database.repository import JobsRepo, ProjectsRepo, SegmentsRepo, SettingsRepo, STAGES
 from app.schemas.api import JobSettings, SegmentRegenerate, SegmentUpdate
-from app.services import ffmpeg, models_manager, subtitles
+from app.services import ffmpeg, models_manager, storage, subtitles
 from app.workers.queue import queue_manager
 
 router = APIRouter(tags=["jobs"])
@@ -334,6 +334,7 @@ def delete_job(job_id: str):
     project = job.get("project") or {}
     directory = ensure_within(config.projects_dir / project.get("id", "") / f"job_{job_id}",
                               config.projects_dir)
+    storage.remove_export_copy(job)
     from app.database.db import get_conn
 
     with get_conn() as conn:

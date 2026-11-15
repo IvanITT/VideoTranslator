@@ -130,7 +130,12 @@ export const api = {
       body: JSON.stringify(values),
     }),
   cleanup: (days = 7) =>
-    request<{ removed: number; freed_mb: number }>(`/maintenance/cleanup?days=${days}`, {
+    request<{
+      removed: number;
+      freed_mb: number;
+      days?: number;
+      categories?: Record<string, { removed: number; freed_mb: number }>;
+    }>(`/maintenance/cleanup?days=${days}`, {
       method: "POST",
     }),
 

@@ -13,7 +13,7 @@ from app.core.config import config
 from app.core.errors import AppError, ConflictError, MediaError, NotFoundError, ValidationError
 from app.core.security import ensure_within, sanitize_filename
 from app.database.repository import JobsRepo, ProjectsRepo, SettingsRepo
-from app.services import ffmpeg, models_manager
+from app.services import ffmpeg, models_manager, storage
 from app.workers.queue import queue_manager
 
 router = APIRouter(tags=["projects"])
@@ -152,6 +152,8 @@ def delete_project(project_id: str):
             "Cancela el trabajo y espera a que termine antes de borrar el proyecto.",
         )
     directory = ensure_within(config.projects_dir / project_id, config.projects_dir)
+    for job in jobs:
+        storage.remove_export_copy(job)
     ProjectsRepo.delete(project_id)
     shutil.rmtree(directory, ignore_errors=True)
 

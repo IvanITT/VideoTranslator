@@ -343,7 +343,7 @@ export function SettingsPage() {
               description="Útil para depurar; ocupa más disco y no es necesario para exportar."
             />
             <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-              <Field label="Días antes de limpiar temporales">
+              <Field label="Días antes de limpiar temporales y artefactos antiguos" hint="Los videos finales y subtítulos se conservan.">
                 <input
                   type="number"
                   min={1}
