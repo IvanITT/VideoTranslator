@@ -171,6 +171,9 @@ Run the test suite:
 cd backend
 ..\.venv\Scripts\python.exe -m pytest -m "not slow"
 ..\.venv\Scripts\python.exe -m pytest -m slow
+
+cd ..\frontend
+npm test
 ```
 
 ## 6. Manual installation
@@ -290,10 +293,10 @@ downloading weights again. Both are excluded from git by `.gitignore`.
 cd frontend; npm install; npm run build; cd ..
 ```
 
-The database schema is created with `CREATE TABLE IF NOT EXISTS`; this version
-does not include migrations for older schemas. If you switch between incompatible
-development versions, remove `storage\app.db` (this deletes project history, not
-the source videos you still have).
+The database schema is versioned with `PRAGMA user_version` and lightweight
+migrations. Version 2.0 upgrades databases created by 1.0 automatically. Deleting
+`storage\app.db` is only a full reset (it removes project history, not the source
+videos you still have).
 
 ## 10. Uninstalling
 

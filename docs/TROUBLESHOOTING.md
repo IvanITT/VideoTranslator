@@ -380,11 +380,14 @@ Wait for completion/cancellation, edit, then **Volver a renderizar**.
 
 ## Reset and cleanup
 
-- Remove old temp files: **Ajustes → Mantenimiento**, or the cleanup endpoint.
+- **Ajustes → Limpiar ahora** (or `POST /api/maintenance/cleanup?days=N`) removes
+  old temp files, partial uploads, old exports, orphan project/job folders and old
+  job intermediates. `output.mp4`, subtitles and transcripts are preserved.
 - Delete a project in the UI (blocked while a job is active). This removes its
-  source, artifacts and DB rows.
+  source, artifacts, DB rows and export copy.
 - To reset history only: stop the app, delete `storage\app.db` (and `-wal`/`-shm`).
-  Project files remain orphaned and can be deleted manually.
+  Project files remain orphaned; the next cleanup removes old orphan folders.
+  Schema migrations run automatically, so deleting the DB is normally unnecessary.
 - To remove all app data: delete `storage\`. To reclaim model space: delete
   `models\<id>` except `manifest.json`.
 - Full uninstall: delete the project folder. No services or registry entries are

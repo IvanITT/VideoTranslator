@@ -28,7 +28,7 @@ const TABS = [
   { id: "tts", label: "Voces" },
 ] as const;
 
-const ESSENTIAL = ["whisper-base", "marian-en-es", "piper-es-mx-ald-medium"];
+const ESSENTIAL = ["whisper-tiny", "marian-en-es", "piper-es-mx-ald-medium"];
 
 export function Models() {
   const modelsQ = useModels();
@@ -115,7 +115,7 @@ export function Models() {
               <p className="mt-1 max-w-lg text-xs leading-relaxed text-slate-500">
                 Tres modelos ligeros bastan para empezar: reconocimiento, traducción
                 inglés→español y una voz mexicana. Total aproximado:{" "}
-                <span className="font-mono text-slate-300">{essentialsSize || 518} MB</span>.
+                <span className="font-mono text-slate-300">{essentialsSize || 450} MB</span>.
               </p>
             </div>
             <Badge tone="green" dot>

@@ -26,8 +26,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyProduct("Spanish Dubbing Studio")]
 [assembly: System.Reflection.AssemblyDescription("Local launcher for Spanish Dubbing Studio")]
 [assembly: System.Reflection.AssemblyCompany("Spanish Dubbing Studio")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("2.0.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.0.0.0")]
 
 namespace SpanishDubbingStudio
 {

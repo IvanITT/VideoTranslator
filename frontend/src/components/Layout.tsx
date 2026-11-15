@@ -135,7 +135,7 @@ export function Layout() {
             <span className="flex items-center gap-1.5">
               <Lock size={10} /> 127.0.0.1
             </span>
-            <span>v{health.data?.version ?? "1.0.0"}</span>
+            <span>v{health.data?.version ?? "2.0.0"}</span>
           </div>
         </div>
       </aside>

@@ -1,6 +1,6 @@
 # Architecture
 
-Spanish Dubbing Studio is a local web application: a FastAPI process serves a
+Spanish Dubbing Studio 2.0.0 is a local web application: a FastAPI process serves a
 React SPA, owns a SQLite database, runs one background dubbing worker and shells
 out to FFmpeg/Piper. There is no external service at runtime.
 
@@ -63,6 +63,7 @@ out to FFmpeg/Piper. There is no external service at runtime.
 | `backend/app/services/mixing.py` | Ducking/loudness mix and MP4 mux/verify |
 | `backend/app/services/subtitles.py` | SRT, VTT, TXT |
 | `backend/app/services/models_manager.py` | Manifest, install detection, explicit downloads |
+| `backend/app/services/storage.py` | Disk cleanup, orphan folders and export removal |
 | `backend/app/workers/pipeline.py` | Nine-stage resumable pipeline |
 | `backend/app/workers/queue.py` | One worker, cancellation, crash marking |
 | `frontend/src/api/client.ts` | Typed fetch wrapper, upload progress, API errors |
@@ -99,17 +100,34 @@ inside segment loops, and FFmpeg subprocesses are killed every 250 ms while
 | # | Stage | Weight | Output / artifact | Resume rule |
 |---|---|---|---|---|
 | 1 | analysis | 2 | `analysis.json` (probe) | stage completed + file exists |
-| 2 | extraction | 5 | `audio/original.wav` (48 kHz stereo), `audio/asr.wav` (16 kHz mono) | both files + stage completed |
+| 2 | extraction | 5 | `audio/original.wav` (48 kHz stereo), `audio/asr.wav` (16 kHz mono) | each track reused independently |
 | 3 | asr | 20 | `transcript.json`, rows in `segments` | transcript + segments with `text_src` |
 | 4 | translation | 12 | `translation.json`, `segments.text_es` | file + every segment translated |
 | 5 | separation | 5 | `stems/background.wav` (optional) | file + stage completed/skipped |
 | 6 | tts | 32 | `tts/<idx>_<hash>.wav` per segment | file name hash matches text+voice+rate+volume |
-| 7 | sync | 8 | `dub.wav`, `sync.json` | recomputed from voiced segments (fast) |
-| 8 | mix | 4 | `mix.wav` | recomputed |
-| 9 | render | 12 | `job_<id>/output.mp4`, `subtitles/*`, export copy | recomputed |
+| 7 | sync | 8 | `dub.wav`, `sync.json` | fingerprint of segments/settings matches |
+| 8 | mix | 4 | `mix.wav`, `mix.json` | fingerprint of dub/background/options matches |
+| 9 | render | 12 | `job_<id>/output.mp4`, `render.json`, `subtitles/*`, export copy | fingerprint of mix/source/segments matches |
 
 Progress weights sum to 100. The pipeline reports a maximum of 99 % until the
 job row is finalized at 100 %.
+
+### Performance and artifact reuse
+
+- `sync`, `mix` and `render` store a SHA-1 fingerprint in their JSON artifact.
+  If the fingerprint and the artifact still exist, FFmpeg is skipped and the
+  stage is marked `skipped`. Subtitles are rewritten on every render pass.
+- Editing one line invalidates only its TTS hash, then sync/mix/render because
+  their input fingerprints change.
+- Extraction reuses `original.wav` and `asr.wav` independently, so a rerender
+  only rebuilds a missing scratch track.
+- TTS runs in a bounded `ThreadPoolExecutor`
+  (`max(1, min(4, threads // 2))`), overlapping Piper/FFmpeg process startup.
+  SQLite updates and warnings are applied on the pipeline thread.
+- Model folder size is cached for 30 s and invalidated after downloads/removals,
+  so `/api/system` polling does not rescan every weight file.
+- Upload chunks are written with `run_in_threadpool`, keeping the async event
+  loop free during large uploads.
 
 ### Model caching and memory
 
@@ -120,8 +138,9 @@ job row is finalized at 100 %.
   `finally` block, even on failure.
 - `ensure_memory(required_mb, stage)` waits up to 45 s for available RAM and
   raises a `resource_error` with a recovery hint if it never becomes available.
-- TTS runs Piper as a subprocess per segment, so no ONNX session is kept alive
-  between jobs.
+- TTS runs Piper as a subprocess per segment. Synthesis uses a bounded thread
+  pool, so no ONNX session is kept alive between jobs.
+- Each synthesis call remains isolated for cancellation and failure handling.
 
 ### Speech recognition
 
@@ -198,6 +217,18 @@ Dual mode adds `0:a:0` as a second track with language metadata. `verify_output`
 re-probes the file, requires an audio track and warns if the duration differs by
 more than 1.5 s. A copy is placed in `storage/exports/`.
 
+## Storage lifecycle
+
+`app/services/storage.py` centralizes disk maintenance:
+
+- `POST /maintenance/cleanup?days=N` removes stale temp files, partial uploads,
+  old exports, orphan project/job folders and old job intermediates.
+- For inactive jobs older than `days`, it deletes `audio/`, `tts/`, `stems/`,
+  `dub.wav` and `mix.wav` while preserving `output.mp4`, subtitles and the
+  transcript. Jobs with `keep_temp` are skipped.
+- Deleting a job or project also removes its `storage/exports/*` copy.
+- The response reports `removed`, `freed_mb` and per-category totals.
+
 ## Database
 
 SQLite with WAL and foreign keys enabled; one short-lived connection per
@@ -213,8 +244,14 @@ operation (thread-safe without an ORM).
 | `settings` | key/value JSON for global defaults |
 | `model_downloads` | id, status, progress, bytes, message, updated_at |
 
-Indexes cover project jobs, status, segments and events. Job settings are frozen
-at creation. `settings.resume` distinguishes a normal run from a resumed one.
+Indexes cover project jobs, status, finished time, segments and events. Job
+settings are frozen at creation. `settings.resume` distinguishes a normal run
+from a resumed one.
+
+The schema is versioned with `PRAGMA user_version` (`SCHEMA_VERSION = 2`).
+`init_db()` detects legacy 1.0 databases without a version, treats them as
+baseline 1 and applies pending migrations (v2 adds `idx_jobs_finished`) without
+deleting projects or settings.
 
 ## HTTP API
 
@@ -251,7 +288,7 @@ All routes are under `/api`. Reads need no header; writes require
 | POST | `/models/unload` | free ASR/translation RAM |
 | GET/PUT | `/settings` | global settings |
 | GET | `/options` | (see above) |
-| POST | `/maintenance/cleanup?days=N` | remove old temp files |
+| POST | `/maintenance/cleanup?days=N` | remove temp/uploads/exports, old intermediates and orphan folders |
 
 Errors are always `{"error": {"code", "message", "hint"}}`. Pydantic request
 errors return 422; typed application errors use 400/403/404/409/422/507.
@@ -279,13 +316,15 @@ not built, the API returns 503 with a build hint.
 
 ## Frontend
 
-- `App.tsx` routes: Dashboard (`/`), Studio (`/studio/:projectId`), Models,
+- `App.tsx` routes: Dashboard (`/`), Studio (`/projects/:projectId`), Models,
   Settings. Layout uses a compact sidebar and responsive content.
 - `api/client.ts` wraps `fetch`, injects `X-VTS-Client`, parses typed API errors
   and uploads with `XMLHttpRequest` progress.
 - `hooks/useApi.ts` provides `useJob`, `useProjects`, `useModels`, etc. Polling
   stops when the document is hidden and uses different intervals for active vs
-  finished jobs to avoid unnecessary requests.
+  finished jobs to avoid unnecessary requests. `useSegments` exposes load errors
+  so Studio can offer a retry action.
+- Frontend tests use Vitest + jsdom + Testing Library (`npm test`).
 - `Studio.tsx` is the main workflow: upload/launch, stage tracker, video preview,
   segment editor with per-line audio, warnings, subtitles and download.
 - The UI is in Spanish (Mexico), with explicit labels for model/license state and
@@ -298,24 +337,28 @@ not built, the API returns 503 with a build hint.
 
 | File | Coverage |
 |---|---|
-| `test_core.py` | host detection, dirs, binaries, path traversal, filename slugs, CSRF header/origin, security headers, settings validation/clamping, repository persistence |
+| `test_core.py` | host detection, dirs, binaries, live hardware snapshot, path traversal, filename slugs, CSRF header/origin, security headers, settings validation/clamping, repository persistence |
 | `test_media.py` | probe (valid/invalid/no audio), 16 kHz extraction, thumbnails, silence, SRT timestamps, subtitle exports, subprocess cancellation/timeout/exit codes, dub-only/ducked mixes, MP4 mux (single/dual), output verification |
 | `test_alignment.py` | ordering/no overlap, speed limit, tail compression, empty segments, exact WAV duration, silence gaps, `atempo`, cancellation, text fitting, gap clamp |
-| `test_adapters.py` | mocked Whisper success/failure/cancel/empty, overlap merge/split, translation batches/cancel/mismatch, text helpers, TTS cleaning/errors, manifest structure, installed resolvers |
+| `test_adapters.py` | mocked Whisper success/failure/cancel/empty, overlap merge/split, translation batches/cancel/mismatch, text helpers, TTS cleaning/errors, Demucs failure handling, manifest structure, installed resolvers |
 | `test_api.py` | upload validation (extension/empty/fake/no audio), thumbnail/video, project CRUD, active-job conflict, options, settings, health/system/models, job create/cancel/conflict, resume, editing, regenerate, subtitles, events, media/download, delete rules |
-| `test_jobs.py` | cancel queued/finished, `mark_interrupted`, resume after restart, artifact reuse, missing source, worker cancellation/AppError/unexpected exception, pre-start cancel |
+| `test_jobs.py` | cancel queued/finished, `mark_interrupted`, resume after restart, artifact reuse, fingerprints for sync/mix/render, parallel TTS, missing source, worker cancellation/AppError/unexpected exception, pre-start cancel |
+| `test_storage.py` | old intermediates/exports, temp/uploads, orphan folders, `keep_temp`, export deletion and SQLite migrations |
 | `test_zz_e2e.py` | **real** upload → Whisper Tiny → Marian → Piper → sync → mux, then re-transcribe the output and assert Spanish, plus subtitles/download/stream stats |
 
 Current results on the development machine (i3-1115G4, 8 GB, CPU):
 
 ```
-132 passed, 1 deselected in 17.35s     # pytest -m "not slow"
-1 passed, 132 deselected in 20.44s     # pytest -m slow
+164 passed, 2 skipped in 28.99s     # pytest
+164 passed, 1 skipped in 19.83s     # pytest -m "not slow"
+1 skipped                           # pytest -m slow (samples/sample_en.mp4 missing)
+5 passed                            # npm test (frontend)
 ```
 
 The slow test processes a real 12.7 s English clip in about 20 s including the
 verification transcription. Longer videos scale with duration; the pipeline
-reports progress and can be cancelled.
+reports progress and can be cancelled. The slow test is skipped when the sample
+clip is not present.
 
 ## Known limitations
 
@@ -327,8 +370,6 @@ reports progress and can be cancelled.
   languages need their pair or NLLB (non-commercial).
 - Aggressive speed-up can sound unnatural; the app warns but does not silently
   rewrite the text. `fit_text_to_window` is available for future auto-shortening.
-- No DB migrations between major versions; remove `storage/app.db` if the schema
-  is incompatible.
 - GPU inference is detected but not the tested path; setup installs CPU PyTorch.
 - The queue is intentionally single-worker; `parallel_jobs` is fixed at 1.
 - The SPA has no authentication and must stay bound to localhost.

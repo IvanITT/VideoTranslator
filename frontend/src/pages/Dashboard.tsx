@@ -290,7 +290,7 @@ export function Dashboard() {
       <section>
         <SectionHeading
           title="Cómo funciona"
-          description="Cinco etapas locales, con resultados persistentes en cada paso."
+          description="Nueve etapas locales, con resultados persistentes en cada paso."
         />
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           {[

@@ -6,7 +6,7 @@
 
 **Local-first AI video dubbing to Spanish. No cloud, no accounts, no telemetry.**
 
-[![Versión](https://img.shields.io/badge/versi%C3%B3n-1.0.0-6366F1?style=for-the-badge)](https://github.com/IvanITT/VideoTranslator)
+[![Versión](https://img.shields.io/badge/versi%C3%B3n-2.0.0-6366F1?style=for-the-badge)](https://github.com/IvanITT/VideoTranslator)
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?style=for-the-badge&logo=windows&logoColor=white)](#plataforma-y-requisitos)
 [![Python](https://img.shields.io/badge/Python-3.10--3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)](#dependencias)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white)](#arquitectura-y-stack)
@@ -22,7 +22,9 @@
 
 ---
 
-> **Versión 1.0.0** · Windows 10/11 64-bit · CPU-first · Probado en un Intel i3-1115G4, 8 GB de RAM y sin GPU.
+> **Versión 2.0.0** · Windows 10/11 64-bit · CPU-first · Probado en un Intel i3-1115G4, 8 GB de RAM y sin GPU.
+>
+> La versión 2.0 añade generación de voz en paralelo, reutilización inteligente de sincronización/mezcla/render, limpieza de almacenamiento por categorías, migraciones de base de datos y validaciones más estrictas. Todo sigue ejecutándose en tu equipo.
 >
 > Sube un MP4, transcribe su diálogo, tradúcelo al español, genera una voz, ajusta la duración al video original, mézclalo con el fondo y exporta un MP4 doblado con subtítulos. **Después de la descarga inicial de modelos, ningún video, audio o texto sale de tu PC.**
 
@@ -85,6 +87,9 @@ El flujo completo es:
 | **Mezcla de audio** | Cuatro modos, separación opcional con Demucs o fallback de FFmpeg, ducking y normalización a −16 LUFS. |
 | **Editor por segmento** | Edita texto y tiempos, escucha cada línea, regenera una sola voz y vuelve a renderizar solo lo necesario. |
 | **Recuperación** | Cada etapa guarda artefactos; puedes cancelar, cerrar la app y reanudar sin repetir trabajo completado. |
+| **Rendimiento (2.0)** | TTS paralelo acotado, extracción por pista y reutilización de sincronización, mezcla y render si sus entradas no cambiaron. |
+| **Mantenimiento (2.0)** | Limpieza por categorías de temporales, exportaciones y artefactos antiguos; los videos finales y subtítulos se conservan. |
+| **Robustez (2.0)** | Migraciones SQLite versionadas, validación estricta de ajustes, hardware en vivo y errores del guion con reintento. |
 | **Gestor de modelos** | Descargas explícitas, estado de instalación, licencias visibles, eliminación y liberación de RAM. |
 | **Privacidad** | Escucha por defecto en `127.0.0.1`, sin cuentas, sin telemetría y sin inferencia remota. |
 | **Exportación** | MP4 con el video original copiado sin recodificar, más SRT, VTT y TXT. |
@@ -97,6 +102,18 @@ El flujo completo es:
 - No regenera labios ni hace lip-sync.
 - No descarga modelos automáticamente.
 - No funciona como servicio remoto ni multiusuario.
+
+### Novedades de la versión 2.0
+
+- **Generación de voz paralela:** varios segmentos se sintetizan a la vez con un pool acotado según los hilos disponibles.
+- **Reutilización por huella:** `sync`, `mix` y `render` detectan si sus entradas cambiaron y evitan reejecutar FFmpeg cuando no hace falta.
+- **Extracción incremental:** si falta una sola pista de audio, solo se regenera esa pista.
+- **Caché de modelos:** el tamaño en disco se cachea y se invalida al descargar o eliminar modelos.
+- **Subidas no bloqueantes:** la escritura de archivos grandes ya no bloquea el event loop.
+- **Limpieza por categorías:** temporales, subidas, exportaciones, carpetas huérfanas y artefactos antiguos, conservando los videos finales.
+- **Exportaciones coherentes:** al eliminar un proyecto o job también se borra su copia en `storage/exports`.
+- **Migraciones SQLite:** esquema versionado con `PRAGMA user_version`; las bases 1.0 se actualizan sin borrar proyectos.
+- **Robustez:** hardware en vivo, validación de ajustes, Demucs sin errores opacos y errores del guion visibles con botón de reintento.
 
 ---
 
@@ -118,14 +135,16 @@ flowchart LR
 | # | Etapa | Qué hace | Artefacto principal |
 |---|---|---|---|
 | 1 | **Análisis** | Valida el contenedor, pista de audio, duración, resolución y genera miniatura. | `analysis.json` |
-| 2 | **Extracción** | Extrae audio 48 kHz estéreo para la mezcla y 16 kHz mono para ASR. | `audio/original.wav`, `audio/asr.wav` |
+| 2 | **Extracción** | Extrae audio 48 kHz estéreo para la mezcla y 16 kHz mono para ASR. Si una pista ya existe, solo se regenera la que falta. | `audio/original.wav`, `audio/asr.wav` |
 | 3 | **Reconocimiento de voz** | Transcribe con faster-whisper, aplica VAD y normaliza/divide segmentos. | `transcript.json` + tabla `segments` |
 | 4 | **Traducción** | Traduce cada segmento al español con MarianMT o NLLB. | `translation.json` + `text_es` |
 | 5 | **Separación** | Opcional: separa voz y fondo con Demucs o estimación de cancelación central de FFmpeg. | `stems/background.wav` |
-| 6 | **Generación de voz** | Sintetiza cada línea con Piper y la remuestrea a 48 kHz mono. | `tts/<idx>_<hash>.wav` |
+| 6 | **Generación de voz** | Sintetiza cada línea con Piper en paralelo acotado y la remuestrea a 48 kHz mono. | `tts/<idx>_<hash>.wav` |
 | 7 | **Sincronización** | Planifica la línea de tiempo, aplica `atempo` y ensambla el doblaje. | `dub.wav`, `sync.json` |
-| 8 | **Mezcla** | Aplica ducking, loudness y limiter; combina voz y fondo. | `mix.wav` |
-| 9 | **Render** | Copia el stream de video original, codifica AAC y exporta video + subtítulos. | `output.mp4`, `subtitles/*` |
+| 8 | **Mezcla** | Aplica ducking, loudness y limiter; combina voz y fondo. | `mix.wav`, `mix.json` |
+| 9 | **Render** | Copia el stream de video original, codifica AAC y exporta video + subtítulos. | `output.mp4`, `render.json`, `subtitles/*` |
+
+Desde la versión 2.0, `sync`, `mix` y `render` guardan una huella de sus entradas. Si no cambió nada relevante, la etapa se marca como `skipped` y se reutiliza el artefacto anterior. Editar una línea o cambiar su voz invalida solo las etapas necesarias.
 
 El progreso se calcula como una suma ponderada de las nueve etapas. La app mantiene el progreso por debajo del 100 % hasta que el trabajo termina correctamente.
 
@@ -383,6 +402,7 @@ Desde la interfaz puedes descargar, eliminar y liberar modelos de la RAM. Un mod
 5. Opcional: edita una línea en español, escucha su audio, regenera solo esa línea y pulsa **Volver a renderizar**. Solo se repiten las etapas afectadas.
 6. Descarga el MP4, SRT, VTT o TXT.
 7. Si un trabajo falla o cierras la app, abre el trabajo y pulsa **Reanudar**.
+8. En **Ajustes → Limpiar ahora** puedes borrar temporales, exportaciones y artefactos antiguos. Los videos finales y subtítulos se conservan.
 
 ### Formatos y límites
 
@@ -448,7 +468,7 @@ Los ajustes se guardan en SQLite y se pueden cambiar desde **Ajustes** o con `GE
 | `quantize_translation` | `false` | Cuantización dinámica INT8 para traducción. |
 | `max_upload_mb` | `2048` | Tamaño máximo de subida. |
 | `max_duration_s` | `3600` | Duración máxima del video. |
-| `cleanup_days` | `7` | Días antes de limpiar temporales. |
+| `cleanup_days` | `7` | Días antes de limpiar temporales, exportaciones y artefactos antiguos. |
 | `parallel_jobs` | `1` | Fijo en 1: la cola es de un solo worker. |
 
 ### Variables de entorno
@@ -505,6 +525,9 @@ Fijadas en [`frontend/package.json`](frontend/package.json):
 | `typescript` | 5.6.3 | Tipado. |
 | `tailwindcss` | 3.4.16 | Estilos. |
 | `postcss` / `autoprefixer` | 8.4.49 / 10.4.20 | Pipeline CSS. |
+| `vitest` | 3.2.7 | Pruebas de hooks y frontend. |
+| `jsdom` | 25.x | Entorno DOM para Vitest. |
+| `@testing-library/react` | 16.1 | Renderizado de hooks en pruebas. |
 
 ### Binarios y herramientas
 
@@ -591,7 +614,7 @@ Todas las rutas viven bajo `/api`. Las lecturas no requieren cabecera; las escri
 | `POST` | `/api/models/{id}/download` | Descarga explícita en segundo plano. |
 | `POST` | `/api/models/unload` | Liberar ASR y traducción de la RAM. |
 | `GET` / `PUT` | `/api/settings` | Ajustes globales. |
-| `POST` | `/api/maintenance/cleanup?days=N` | Limpiar temporales antiguos. |
+| `POST` | `/api/maintenance/cleanup?days=N` | Limpiar temporales, exportaciones y artefactos antiguos por categorías. |
 
 Los errores siempre tienen la forma:
 
@@ -609,7 +632,9 @@ Los errores siempre tienen la forma:
 
 ### Base de datos
 
-Tablas principales: `projects`, `jobs`, `job_stages`, `segments`, `events`, `settings` y `model_downloads`. Los ajustes del trabajo se congelan al crearlo. `settings.resume` distingue una ejecución normal de una reanudación. No hay migraciones entre versiones mayores: si el esquema es incompatible, hay que eliminar `storage\app.db` (perdiendo proyectos y ajustes).
+Tablas principales: `projects`, `jobs`, `job_stages`, `segments`, `events`, `settings` y `model_downloads`. Los ajustes del trabajo se congelan al crearlo. `settings.resume` distingue una ejecución normal de una reanudación.
+
+Desde la versión 2.0 el esquema está versionado con `PRAGMA user_version` y migraciones ligeras. Las bases creadas por la versión 1.0 se actualizan automáticamente al arrancar, sin borrar proyectos ni ajustes. La versión actual del esquema es **2**.
 
 ---
 
@@ -636,6 +661,7 @@ Probado en **Windows 11**, Intel **i3-1115G4** (2 núcleos / 4 hilos), **8 GB de
 - La primera ejecución es más lenta porque carga modelos; las siguientes reutilizan la caché.
 - Videos más largos escalan con la duración. El pipeline informa progreso y se puede cancelar.
 - La cola es de **un solo trabajo a la vez** para no agotar la RAM en equipos de 8 GB.
+- La versión 2.0 solapa la síntesis de voz con un pool acotado, reutiliza `sync`/`mix`/`render` cuando no cambiaron sus entradas y evita recorrer toda la carpeta de modelos en cada polling.
 
 ### Pruebas
 
@@ -650,16 +676,22 @@ cd backend
 
 # Todo
 ..\.venv\Scripts\python.exe -m pytest
+
+# Frontend
+cd ..\frontend
+npm test
 ```
 
-Resultados en la máquina de desarrollo para la versión 1.0.0:
+Resultados en la máquina de desarrollo para la versión 2.0.0:
 
 ```text
-132 passed, 1 deselected in 17.35s     # pytest -m "not slow"
-1 passed, 132 deselected in 20.44s     # pytest -m slow
+164 passed, 2 skipped in 28.99s     # pytest
+164 passed, 1 skipped in 19.83s     # pytest -m "not slow"
+1 skipped                           # pytest -m slow (falta samples/sample_en.mp4)
+5 passed                            # npm test
 ```
 
-La suite cubre validación de subida y API, seguridad/CSRF/contención de rutas, probing/extracción/miniaturas de FFmpeg, conversión de tiempos y subtítulos, adaptadores de ASR y traducción (mockeados), timing/alineación/atempo, cancelación, recuperación tras fallo y reutilización de artefactos, mezcla de audio, muxing MP4 y un E2E real que vuelve a transcribir la salida para confirmar que es español. Más detalle en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#tests).
+La suite cubre validación de subida y API, seguridad/CSRF/contención de rutas, probing/extracción/miniaturas de FFmpeg, conversión de tiempos y subtítulos, adaptadores de ASR y traducción, timing/alineación/atempo, cancelación, recuperación tras fallo, reutilización de artefactos, fingerprints de sync/mix/render, TTS paralelo, limpieza de almacenamiento, migraciones SQLite, validación de ajustes, mezcla de audio, muxing MP4 y un E2E real que vuelve a transcribir la salida para confirmar que es español. Más detalle en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#tests).
 
 ---
 
@@ -673,10 +705,10 @@ VideoTranslator/
 │   │   ├── core/           Configuración, errores tipados, seguridad localhost
 │   │   ├── database/       Esquema SQLite y repositorios
 │   │   ├── schemas/        Modelos Pydantic de request/response
-│   │   ├── services/       FFmpeg, ASR, traducción, TTS, separación, alineación, mezcla
+│   │   ├── services/       FFmpeg, ASR, traducción, TTS, separación, alineación, mezcla, almacenamiento
 │   │   ├── workers/        Cola de un worker y pipeline reanudable
 │   │   └── main.py         Punto de entrada FastAPI
-│   ├── tests/              Suite pytest (rápida + E2E lenta)
+│   ├── tests/              Suite pytest + pruebas de almacenamiento y migraciones
 │   ├── download_models.py  Descarga explícita de modelos
 │   └── verify_install.py   Verificación de la instalación
 ├── frontend/               React 18 + TypeScript + Vite + Tailwind
@@ -684,7 +716,7 @@ VideoTranslator/
 │       ├── pages/          Dashboard, Studio, Models, Settings
 │       ├── components/     Layout, StageTracker, SegmentEditor, UploadDropzone...
 │       ├── api/            Cliente tipado y tipos
-│       └── hooks/          Polling y estado
+│       └── hooks/          Polling consciente de visibilidad y estado
 ├── launcher/               Código C# + build.ps1 del lanzador
 ├── models/                 manifest.json + pesos descargados (ignorados por Git)
 ├── scripts/                setup.ps1 / start.ps1 y lanzadores .bat
@@ -821,13 +853,13 @@ Todo está en `storage\` (base de datos, proyectos, exports y logs) y `models\` 
 - **Aceleración agresiva**: puede sonar poco natural. La app avisa, pero no reescribe el texto en silencio.
 - **Un solo worker**: no hay trabajos en paralelo (`parallel_jobs` fijo en 1).
 - **Sin autenticación**: debe permanecer en localhost.
-- **Sin migraciones de base de datos** entre versiones mayores.
 - **GPU detectada, no probada** como ruta principal.
 - **Windows 10/11 64-bit** es la única plataforma oficial.
 - **Entrada MP4/MOV con audio**; no acepta audio-only ni otros contenedores.
 - **Sin descargas automáticas** de modelos.
+- **Limpieza de artefactos antiguos** desde Ajustes: es manual y conserva los videos finales y subtítulos.
 
-Estas son decisiones deliberadas de la versión 1.0: doblaje fiable y sincronizado en una máquina CPU antes que identidad de voz o lip-sync.
+Estas son decisiones deliberadas de la versión 2.0: doblaje fiable y sincronizado en una máquina CPU antes que identidad de voz o lip-sync.
 
 ---
 
@@ -838,11 +870,15 @@ Las contribuciones son bienvenidas:
 1. Haz un fork del repositorio.
 2. Crea una rama descriptiva: `feat/nueva-voz`, `fix/sincronizacion`.
 3. Mantén los cambios acotados y sigue el estilo del código existente.
-4. Ejecuta las pruebas rápidas antes de abrir el PR:
+4. Ejecuta las pruebas antes de abrir el PR:
 
    ```powershell
    cd backend
    ..\.venv\Scripts\python.exe -m pytest -m "not slow"
+
+   cd ..\frontend
+   npm test
+   npm run typecheck
    ```
 
 5. Abre un Pull Request explicando el cambio y cómo probarlo.

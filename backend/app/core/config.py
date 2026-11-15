@@ -75,7 +75,7 @@ class AppConfig:
     max_upload_mb: int = field(default_factory=lambda: _env_int("VTS_MAX_UPLOAD_MB", 2048))
     max_duration_s: int = field(default_factory=lambda: _env_int("VTS_MAX_DURATION_S", 3600))
     worker_poll_s: float = 1.0
-    version: str = "1.0.0"
+    version: str = "2.0.0"
 
     @property
     def uploads_dir(self) -> Path:
