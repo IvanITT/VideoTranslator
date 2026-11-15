@@ -203,6 +203,12 @@ class JobsRepo:
             conn.execute(f"UPDATE jobs SET {cols} WHERE id=?", (*fields.values(), job_id))
 
     @staticmethod
+    def delete(job_id: str) -> None:
+        """Remove a job and its dependent rows (stages, segments, events)."""
+        with get_conn() as conn:
+            conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+
+    @staticmethod
     def set_stage(job_id: str, stage: str, status: str, progress: float | None = None,
                   detail: str | None = None) -> None:
         now = utcnow()

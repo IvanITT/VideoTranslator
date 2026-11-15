@@ -9,6 +9,20 @@ interface PollingState<T> {
   refresh: () => void;
 }
 
+export function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(() =>
+    typeof document === "undefined" ? true : !document.hidden,
+  );
+
+  useEffect(() => {
+    const update = () => setVisible(!document.hidden);
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  return visible;
+}
+
 export function usePolling<T>(
   loader: () => Promise<T>,
   intervalMs: number,
@@ -18,6 +32,7 @@ export function usePolling<T>(
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
+  const visible = useDocumentVisible();
   const loaderRef = useRef(loader);
   loaderRef.current = loader;
 
@@ -39,15 +54,16 @@ export function usePolling<T>(
         if (alive) setLoading(false);
       }
     };
-    run();
-    if (enabled && intervalMs > 0) {
+    // While the tab is hidden, stop both the immediate request and the timer.
+    if (visible) run();
+    if (enabled && intervalMs > 0 && visible) {
       timer = window.setInterval(run, intervalMs);
     }
     return () => {
       alive = false;
       if (timer) window.clearInterval(timer);
     };
-  }, [intervalMs, enabled, tick]);
+  }, [intervalMs, enabled, tick, visible]);
 
   return { data, error, loading, refresh };
 }
@@ -93,10 +109,11 @@ export function useJob(jobId?: string | null) {
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [events, setEvents] = useState<LogEvent[]>([]);
+  const visible = useDocumentVisible();
   const active = job ? ACTIVE.has(job.status) : true;
 
   useEffect(() => {
-    if (!jobId) return;
+    if (!jobId || !visible) return;
     let alive = true;
     let timer: number | undefined;
 
@@ -123,10 +140,10 @@ export function useJob(jobId?: string | null) {
       alive = false;
       if (timer) window.clearInterval(timer);
     };
-  }, [jobId, active]);
+  }, [jobId, active, visible]);
 
   useEffect(() => {
-    if (!jobId || !job) return;
+    if (!jobId || !job || !visible) return;
     let alive = true;
     const load = async () => {
       try {
@@ -144,7 +161,7 @@ export function useJob(jobId?: string | null) {
         window.clearInterval(timer);
       };
     }
-  }, [jobId, job?.status]);
+  }, [jobId, job?.status, visible]);
 
   return { job, error, events, refresh: () => jobId && api.job(jobId).then(setJob) };
 }

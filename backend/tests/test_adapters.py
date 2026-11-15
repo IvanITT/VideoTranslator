@@ -227,6 +227,22 @@ def test_resolvers_pick_installed_models():
     assert models_manager.find_by_voice("does-not-exist") is None
 
 
+def test_resolve_tts_model_prefers_target_variant(monkeypatch):
+    models = [
+        {"id": "voice-mx", "stage": "tts", "voice":
+            {"id": "voice-mx", "label": "MX", "variant": "es-MX"}},
+        {"id": "voice-es", "stage": "tts", "voice":
+            {"id": "voice-es", "label": "ES", "variant": "es-ES"}},
+    ]
+    monkeypatch.setattr(models_manager, "all_models", lambda: models)
+    monkeypatch.setattr(models_manager, "is_installed", lambda model: True)
+
+    assert models_manager.resolve_tts_model("missing", target_variant="es-ES")["id"] == "voice-es"
+    assert models_manager.resolve_tts_model("voice-mx", target_variant="es-ES")["id"] == "voice-mx"
+    # Unknown variant: fall back to any installed voice.
+    assert models_manager.resolve_tts_model("missing", target_variant="es-001")["id"] == "voice-mx"
+
+
 def test_voice_choices_prioritize_installed_voices():
     choices = models_manager.voice_choices()
     assert choices

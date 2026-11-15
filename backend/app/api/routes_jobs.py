@@ -48,7 +48,12 @@ def create_job(project_id: str, body: JobSettings | None = None) -> dict:
 
     job_id = uuid.uuid4().hex
     job = JobsRepo.create(job_id, project_id, settings.model_dump())
-    queue_manager.submit(job_id)
+    try:
+        queue_manager.submit(job_id)
+    except Exception:
+        # Never leave a queued row that no worker will ever pick up.
+        JobsRepo.delete(job_id)
+        raise
     return job
 
 

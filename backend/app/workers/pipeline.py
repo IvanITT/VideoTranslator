@@ -182,6 +182,12 @@ class Pipeline:
     def run(self) -> dict:
         ctx = self.ctx
         ctx.check_cancel()
+        if ctx.resume:
+            ctx.stats["resumed"] = True
+            ctx.log(
+                "Reanudando trabajo: se reutilizarán las etapas que ya tienen "
+                "artefactos completos."
+            )
         ctx.ensure_memory(500, "analysis")
         self._validate_inputs()
         self._stage_analysis()
@@ -221,7 +227,10 @@ class Pipeline:
 
     def _stage_analysis(self) -> None:
         ctx = self.ctx
-        if ctx.stage_status.get("analysis") == "completed" and (ctx.job_dir / "analysis.json").exists():
+        analysis = ctx.job_dir / "analysis.json"
+        if analysis.exists() and (
+            ctx.stage_status.get("analysis") == "completed" or ctx.resume
+        ):
             ctx.stage_done("analysis", "Metadatos reutilizados", skipped=True)
             return
         ctx.stage_start("analysis", "Verificando pistas y duración")
@@ -242,7 +251,9 @@ class Pipeline:
         ctx = self.ctx
         audio_full = ctx.job_dir / "audio" / "original.wav"
         audio_asr = ctx.job_dir / "audio" / "asr.wav"
-        if audio_full.exists() and audio_asr.exists() and ctx.stage_status.get("extraction") == "completed":
+        if audio_full.exists() and audio_asr.exists() and (
+            ctx.stage_status.get("extraction") == "completed" or ctx.resume
+        ):
             ctx.stage_done("extraction", "Audio ya extraído", skipped=True)
             return
         ctx.stage_start("extraction", "Extrayendo audio sin recodificar el video")
@@ -412,7 +423,9 @@ class Pipeline:
             ctx.stage_done("separation", "Desactivada; se usará atenuación del audio original",
                            skipped=True)
             return
-        if stems.exists() and ctx.stage_status.get("separation") in ("completed", "skipped"):
+        if stems.exists() and (
+            ctx.stage_status.get("separation") in ("completed", "skipped") or ctx.resume
+        ):
             ctx.stage_done("separation", "Fondo separado reutilizado", skipped=True)
             return
         ctx.stage_start("separation", "Separando diálogo y fondo (opcional)")
@@ -444,10 +457,14 @@ class Pipeline:
             raise MediaError("No hay segmentos traducidos para generar voz.",
                              "Revisa la traducción antes de continuar.")
         voice_id = ctx.settings.get("voice") or "es_MX-ald-medium"
-        model = models_manager.resolve_tts_model(voice_id)
+        target_variant = ctx.settings.get("target_variant") or "es-MX"
+        model = models_manager.resolve_tts_model(voice_id, target_variant=target_variant)
         if model["voice"]["id"] != voice_id:
+            fallback_variant = (model.get("voice") or {}).get("variant")
+            suffix = f" ({fallback_variant})" if fallback_variant else ""
             ctx.warn(
-                f"La voz «{voice_id}» no está instalada; se usará «{model['voice']['label']}»."
+                f"La voz «{voice_id}» no está instalada; se usará "
+                f"«{model['voice']['label']}»{suffix}."
             )
         ctx.stage_start("tts", f"Generando voz con {model['voice']['label']}")
         tts_dir = ctx.job_dir / "tts"
@@ -643,7 +660,10 @@ class Pipeline:
         ctx = self.ctx
         if ctx.settings.get("keep_temp"):
             return
-        for folder in ("audio/asr.wav", "mix.wav"):
+        # ``mix.wav`` is a first-class artifact: Studio previews it and the docs
+        # list it as the output of the mixing stage. Only the ASR scratch track
+        # is safe to discard here.
+        for folder in ("audio/asr.wav",):
             try:
                 (ctx.job_dir / folder).unlink(missing_ok=True)
             except OSError:

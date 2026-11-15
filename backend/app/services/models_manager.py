@@ -131,13 +131,26 @@ def resolve_translation_model(source_lang: str, preset: str = "balanced") -> dic
     )
 
 
-def resolve_tts_model(voice_id: str) -> dict:
+def resolve_tts_model(voice_id: str, target_variant: str | None = None) -> dict:
+    """Pick an installed voice, preferring the requested Spanish variant.
+
+    The requested voice always wins when it is installed. If it is missing,
+    voices matching ``target_variant`` are tried before any other Spanish voice,
+    so the regional setting has a real effect on the generated audio.
+    """
     model = find_by_voice(voice_id)
     if model and is_installed(model):
         return model
-    for candidate in all_models():
-        if candidate.get("stage") == "tts" and is_installed(candidate):
-            return candidate
+    installed = [
+        candidate for candidate in all_models()
+        if candidate.get("stage") == "tts" and is_installed(candidate)
+    ]
+    if target_variant:
+        for candidate in installed:
+            if (candidate.get("voice") or {}).get("variant") == target_variant:
+                return candidate
+    if installed:
+        return installed[0]
     raise ModelMissingError(
         "No hay ninguna voz en español instalada.",
         "Abre «Modelos» y descarga la voz «Ald – Español (México)» (≈63 MB).",

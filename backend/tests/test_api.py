@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.core.config import config
-from app.database.repository import JobsRepo, SegmentsRepo
+from app.database.repository import JobsRepo, ProjectsRepo, SegmentsRepo
 from app.schemas.api import JobSettings
 from app.services import models_manager
 
@@ -226,6 +226,35 @@ def test_create_job_validates_body(client, upload_project):
     response = client.post(f"/api/projects/{project['id']}/jobs",
                            json={"source_language": "klingon"})
     assert response.status_code == 422
+
+
+def test_queue_full_does_not_leave_an_orphan_job(client, monkeypatch):
+    from app.api import routes_jobs
+    from app.core.errors import AppError
+
+    project_id = uuid.uuid4().hex
+    ProjectsRepo.create(
+        project_id=project_id, name="Cola llena", original_filename="v.mp4",
+        source_path=str(config.projects_dir / project_id / "source.mp4"),
+        size_bytes=10,
+        probe={"duration": 3.0, "width": 320, "height": 180, "fps": 25.0,
+               "video_codec": "h264", "audio_codec": "aac", "has_audio": True},
+    )
+    monkeypatch.setattr(routes_jobs, "_preflight_models", lambda settings: None)
+
+    def full(job_id):
+        raise AppError("La cola de procesamiento está llena.",
+                       "Espera a que terminen los trabajos actuales.")
+
+    monkeypatch.setattr(routes_jobs.queue_manager, "submit", full)
+
+    response = client.post(f"/api/projects/{project_id}/jobs", json={})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "app_error"
+
+    detail = client.get(f"/api/projects/{project_id}").json()
+    assert detail["jobs"] == []
+    assert client.get("/api/jobs?active_only=true").json()["jobs"] == []
 
 
 def test_create_and_cancel_queued_job(client, upload_project):

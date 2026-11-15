@@ -139,6 +139,67 @@ def test_recovery_reuses_persisted_artifacts(upload_project):
     assert any("reutiliz" in message.lower() for message in events)
 
 
+def test_resume_reuses_artifacts_with_interrupted_status(monkeypatch):
+    """A resume must trust finished artifacts even if the stage was interrupted."""
+    project_id = _project()
+    job_id = make_job(project_id, settings={"resume": True})
+    ctx = JobContext(job_id)
+    ctx.write_json("analysis.json", {"duration": 3.0, "has_audio": True})
+    (ctx.job_dir / "audio").mkdir(parents=True, exist_ok=True)
+    (ctx.job_dir / "audio" / "original.wav").write_bytes(b"RIFF")
+    (ctx.job_dir / "audio" / "asr.wav").write_bytes(b"RIFF")
+    ctx.stage_status.update({"analysis": "interrupted", "extraction": "interrupted"})
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("el artefacto existente debería reutilizarse")
+
+    monkeypatch.setattr("app.workers.pipeline.ffmpeg.probe", must_not_run)
+    monkeypatch.setattr("app.workers.pipeline.ffmpeg.extract_audio", must_not_run)
+
+    pipeline = Pipeline(ctx)
+    pipeline._stage_analysis()
+    pipeline._stage_extraction()
+
+    job = JobsRepo.get(job_id)
+    statuses = {stage["stage"]: stage["status"] for stage in job["stages"]}
+    assert statuses["analysis"] == "skipped"
+    assert statuses["extraction"] == "skipped"
+
+
+def test_cleanup_keeps_mix_preview_and_removes_asr_scratch():
+    project_id = _project()
+    job_id = make_job(project_id)
+    ctx = JobContext(job_id)
+    mix = ctx.job_dir / "mix.wav"
+    asr = ctx.job_dir / "audio" / "asr.wav"
+    asr.parent.mkdir(parents=True, exist_ok=True)
+    mix.write_bytes(b"RIFFmix")
+    asr.write_bytes(b"RIFFasr")
+
+    Pipeline(ctx).cleanup()
+
+    assert mix.exists(), "Studio previews mix.wav; cleanup must not delete it"
+    assert not asr.exists(), "The ASR scratch track can be discarded"
+
+
+def test_pipeline_run_logs_resume(monkeypatch):
+    project_id = _project()
+    job_id = make_job(project_id, settings={"resume": True})
+    ctx = JobContext(job_id)
+    pipeline = Pipeline(ctx)
+
+    monkeypatch.setattr(ctx, "ensure_memory", lambda *args, **kwargs: None)
+    for name in ("_validate_inputs", "_stage_analysis", "_stage_extraction",
+                 "_stage_asr", "_stage_translation", "_stage_separation",
+                 "_stage_tts", "_stage_sync", "_stage_mix", "_stage_render"):
+        monkeypatch.setattr(pipeline, name, lambda *args, **kwargs: None)
+
+    pipeline.run()
+
+    events = [event["message"] for event in JobsRepo.get_events(job_id)]
+    assert any("Reanudando" in message for message in events)
+
+
 def test_pipeline_rejects_missing_source(upload_project):
     project = upload_project()
     job_id = make_job(project["id"])
